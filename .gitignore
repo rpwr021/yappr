@@ -1,0 +1,16 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# py2app build outputs
+/build/
+/dist/
+/Yappr.app/
+
+# macOS
+.DS_Store
+
+# runtime
+/tmp/yappr*.log
+.yappr.lock

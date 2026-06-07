@@ -1,0 +1,19 @@
+[project]
+name = "yappr"
+version = "0.1.0"
+description = "Local push-to-talk dictation + voice-chat menu-bar app (Gemma 4 via llama-server)"
+requires-python = ">=3.11"
+dependencies = [
+    "rumps>=0.4.0",
+    "pynput>=1.8.0",
+    "sounddevice>=0.4.6",
+    "numpy>=1.26",
+    "requests>=2.31",
+    "huggingface-hub>=1.18.0",
+]
+
+[project.scripts]
+yappr = "yappr.app:main"
+
+[tool.uv]
+package = false
