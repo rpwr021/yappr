@@ -11,7 +11,9 @@ mod perms;
 mod runtime;
 mod search;
 mod server;
+mod speech;
 mod ui;
+mod vad;
 
 use std::path::PathBuf;
 

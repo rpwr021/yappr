@@ -83,7 +83,7 @@ impl ChatClient {
                 .and_then(|calls| calls.first())
             {
                 let query = tool_call.query().unwrap_or_else(|| question.to_string());
-                crate::logger::log_line(format!("web_search: {query}"));
+                crate::logger::debug_line(format!("web_search: {query}"));
                 let results = search::web_search(&self.cfg.search, &query);
                 messages.push(json!({
                     "role": "assistant",

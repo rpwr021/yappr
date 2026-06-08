@@ -1,8 +1,12 @@
 use crate::logger::log_line;
+use crate::perms;
 use crate::runtime::{self, Runtime};
 use crate::ui;
 use std::ffi::c_void;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+
+static HOTKEYS_ENABLED: AtomicBool = AtomicBool::new(false);
 
 pub fn run(runtime: Arc<Runtime>) -> Result<(), Box<dyn std::error::Error>> {
     init_appkit()?;
@@ -10,6 +14,22 @@ pub fn run(runtime: Arc<Runtime>) -> Result<(), Box<dyn std::error::Error>> {
     let runtime = runtime::runtime().ok_or("runtime unavailable")?;
     let status_item = Box::leak(Box::new(ui::create_status_item(&runtime.menu_config)?));
     ui::install_animation_timer(status_item);
+    if enable_hotkeys().is_ok() {
+        runtime.status.store(ui::IDLE, Ordering::SeqCst);
+        log_line("Yappr ready: hold Right Option to dictate; hold Cmd+Right Option to chat");
+    } else {
+        runtime.status.store(ui::NOTICE, Ordering::SeqCst);
+        log_line(format!("hotkeys disabled: {}", perms::report().log_summary()));
+        install_hotkey_retry_timer();
+    }
+    run_appkit();
+    Ok(())
+}
+
+fn enable_hotkeys() -> Result<(), &'static str> {
+    if HOTKEYS_ENABLED.load(Ordering::SeqCst) {
+        return Ok(());
+    }
     unsafe {
         let mask = 1_u64 << K_CG_EVENT_FLAGS_CHANGED;
         let tap = CGEventTapCreate(
@@ -21,18 +41,47 @@ pub fn run(runtime: Arc<Runtime>) -> Result<(), Box<dyn std::error::Error>> {
             std::ptr::null_mut(),
         );
         if tap.is_null() {
-            return Err("failed to create CGEventTap; grant Input Monitoring to Yappr".into());
+            return Err("failed to create CGEventTap");
         }
         let source = CFMachPortCreateRunLoopSource(std::ptr::null(), tap, 0);
         if source.is_null() {
-            return Err("failed to create run-loop source for event tap".into());
+            return Err("failed to create run-loop source for event tap");
         }
         CFRunLoopAddSource(CFRunLoopGetCurrent(), source, kCFRunLoopCommonModes);
         CGEventTapEnable(tap, true);
-        log_line("Yappr ready: hold Right Option to dictate; hold Cmd+Right Option to chat");
     }
-    run_appkit();
+    HOTKEYS_ENABLED.store(true, Ordering::SeqCst);
     Ok(())
+}
+
+fn install_hotkey_retry_timer() {
+    unsafe {
+        let timer = CFRunLoopTimerCreate(
+            std::ptr::null(),
+            CFAbsoluteTimeGetCurrent() + 2.0,
+            2.0,
+            0,
+            0,
+            retry_hotkeys,
+            std::ptr::null(),
+        );
+        CFRunLoopAddTimer(CFRunLoopGetCurrent(), timer, kCFRunLoopCommonModes);
+    }
+}
+
+extern "C" fn retry_hotkeys(_timer: *mut c_void, _info: *mut c_void) {
+    if HOTKEYS_ENABLED.load(Ordering::SeqCst) {
+        return;
+    }
+    if enable_hotkeys().is_ok() {
+        if let Some(runtime) = runtime::runtime() {
+            runtime.status.store(ui::IDLE, Ordering::SeqCst);
+        }
+        log_line(format!(
+            "hotkeys enabled after permission retry; {}",
+            perms::report().log_summary()
+        ));
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -129,6 +178,7 @@ extern "C" {
 #[link(name = "CoreFoundation", kind = "framework")]
 extern "C" {
     static kCFRunLoopCommonModes: *const c_void;
+    fn CFAbsoluteTimeGetCurrent() -> f64;
     fn CFMachPortCreateRunLoopSource(
         allocator: *const c_void,
         port: *mut c_void,
@@ -136,4 +186,14 @@ extern "C" {
     ) -> *mut c_void;
     fn CFRunLoopGetCurrent() -> *mut c_void;
     fn CFRunLoopAddSource(rl: *mut c_void, source: *mut c_void, mode: *const c_void);
+    fn CFRunLoopAddTimer(rl: *mut c_void, timer: *mut c_void, mode: *const c_void);
+    fn CFRunLoopTimerCreate(
+        allocator: *const c_void,
+        fire_date: f64,
+        interval: f64,
+        flags: u64,
+        order: isize,
+        callout: extern "C" fn(*mut c_void, *mut c_void),
+        context: *const c_void,
+    ) -> *mut c_void;
 }

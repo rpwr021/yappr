@@ -8,8 +8,10 @@ pub struct Config {
     pub server: ServerConfig,
     pub model: ModelConfig,
     pub audio: AudioConfig,
+    pub vad: VadConfig,
     pub language: LanguageConfig,
     pub chat: ChatConfig,
+    pub speech: SpeechConfig,
     pub logging: LoggingConfig,
     pub search: SearchConfig,
 }
@@ -56,15 +58,51 @@ pub struct AudioConfig {
 }
 
 #[derive(Clone, Debug)]
+pub struct VadConfig {
+    pub enabled: bool,
+    pub threshold: f32,
+    pub min_speech_duration_ms: u32,
+    pub min_silence_duration_ms: u32,
+    pub speech_pad_ms: u32,
+}
+
+#[derive(Clone, Debug)]
 pub struct ChatConfig {
+    pub context_seconds: i64,
+}
+
+#[derive(Clone, Debug)]
+pub struct SpeechConfig {
+    pub backend: String,
+    pub kokoro: KokoroConfig,
+    pub supertonic: SupertonicConfig,
     pub voice: Option<String>,
     pub rate: i32,
-    pub context_seconds: i64,
+}
+
+#[derive(Clone, Debug)]
+pub struct KokoroConfig {
+    pub model_dir: String,
+    pub sid: i32,
+    pub speed: f32,
+    pub lang: String,
+    pub threads: i32,
+}
+
+#[derive(Clone, Debug)]
+pub struct SupertonicConfig {
+    pub model_dir: String,
+    pub sid: i32,
+    pub speed: f32,
+    pub lang: String,
+    pub steps: i32,
+    pub threads: i32,
 }
 
 #[derive(Clone, Debug)]
 pub struct LoggingConfig {
     pub enabled: bool,
+    pub debug: bool,
     pub path: String,
 }
 
@@ -87,15 +125,25 @@ impl Config {
             }
             fs::write(&user_path, include_str!("../resources/config.default.ini"))?;
         }
-        if let Ok(contents) = fs::read_to_string(&user_path) {
-            ini.merge(&contents);
+        let user_contents = fs::read_to_string(&user_path).ok();
+        if let Some(contents) = &user_contents {
+            ini.merge(contents);
         }
 
-        Ok(Self::from_ini(ini))
+        let cfg = Self::from_ini(&mut ini);
+        if user_contents.is_some() {
+            let updated = ini.to_string();
+            if user_contents.as_deref() != Some(updated.as_str()) {
+                fs::write(&user_path, updated)?;
+            }
+        }
+        Ok(cfg)
     }
 
-    fn from_ini(mut ini: Ini) -> Self {
+    fn from_ini(ini: &mut Ini) -> Self {
         ini.migrate_old_model_defaults();
+        ini.migrate_old_speech_defaults();
+        ini.remove_obsolete_keys();
         let active_model = ini.get("models", "active", "e2b-qat");
         let model_section = format!("model:{active_model}");
 
@@ -135,6 +183,22 @@ impl Config {
                     .parse()
                     .unwrap_or(0.4),
             },
+            vad: VadConfig {
+                enabled: ini.get("vad", "enabled", "true").parse().unwrap_or(true),
+                threshold: ini.get("vad", "threshold", "0.5").parse().unwrap_or(0.5),
+                min_speech_duration_ms: ini
+                    .get("vad", "min_speech_duration_ms", "250")
+                    .parse()
+                    .unwrap_or(250),
+                min_silence_duration_ms: ini
+                    .get("vad", "min_silence_duration_ms", "100")
+                    .parse()
+                    .unwrap_or(100),
+                speech_pad_ms: ini
+                    .get("vad", "speech_pad_ms", "30")
+                    .parse()
+                    .unwrap_or(30),
+            },
             language: LanguageConfig {
                 source: ini.get("language", "source", "auto"),
                 target: ini.get("language", "target", "auto"),
@@ -150,15 +214,15 @@ impl Config {
                     .collect(),
             },
             chat: ChatConfig {
-                voice: non_empty(ini.get("chat", "voice", "")),
-                rate: ini.get("chat", "rate", "190").parse().unwrap_or(190),
                 context_seconds: ini
                     .get("chat", "context_seconds", "60")
                     .parse()
                     .unwrap_or(60),
             },
+            speech: ini.speech_config(),
             logging: LoggingConfig {
                 enabled: ini.get("logging", "enabled", "true").parse().unwrap_or(true),
+                debug: ini.get("logging", "debug", "false").parse().unwrap_or(false),
                 path: ini.get("logging", "path", "~/.yappr/yappr.log"),
             },
             search: SearchConfig {
@@ -246,6 +310,56 @@ impl Ini {
         self.get(section, key, &fallback)
     }
 
+    fn speech_config(&self) -> SpeechConfig {
+        let speech_rate = self.get("speech", "rate", "190");
+        SpeechConfig {
+            backend: self.get("speech", "backend", "say"),
+            kokoro: KokoroConfig {
+                model_dir: self.get(
+                    "speech",
+                    "kokoro_model_dir",
+                    "~/.yappr/models/kokoro-multi-lang-v1_0",
+                ),
+                sid: self.get("speech", "kokoro_sid", "3").parse().unwrap_or(3),
+                speed: self
+                    .get("speech", "kokoro_speed", "1.0")
+                    .parse()
+                    .unwrap_or(1.0),
+                lang: self.get("speech", "kokoro_lang", "en"),
+                threads: self
+                    .get("speech", "kokoro_threads", "2")
+                    .parse()
+                    .unwrap_or(2),
+            },
+            supertonic: SupertonicConfig {
+                model_dir: self.get(
+                    "speech",
+                    "supertonic_model_dir",
+                    "~/.yappr/models/sherpa-onnx-supertonic-3-tts-int8-2026-05-11",
+                ),
+                sid: self
+                    .get("speech", "supertonic_sid", "0")
+                    .parse()
+                    .unwrap_or(0),
+                speed: self
+                    .get("speech", "supertonic_speed", "1.0")
+                    .parse()
+                    .unwrap_or(1.0),
+                lang: self.get("speech", "supertonic_lang", "en"),
+                steps: self
+                    .get("speech", "supertonic_steps", "8")
+                    .parse()
+                    .unwrap_or(8),
+                threads: self
+                    .get("speech", "supertonic_threads", "2")
+                    .parse()
+                    .unwrap_or(2),
+            },
+            voice: non_empty(self.get("speech", "voice", "")),
+            rate: speech_rate.parse().unwrap_or(190),
+        }
+    }
+
     fn migrate_old_model_defaults(&mut self) {
         self.0.retain(|(section, _), _| section != "model:e4b-q4km");
         if self.get("models", "active", "") == "e4b-q4km" {
@@ -278,6 +392,35 @@ impl Ini {
                 "gemma-4-E2B-it-mmproj.gguf".to_string(),
             );
         }
+    }
+
+    fn migrate_old_speech_defaults(&mut self) {
+        let chat_voice = non_empty(self.get("chat", "voice", ""));
+        let speech_voice = non_empty(self.get("speech", "voice", ""));
+        if speech_voice.is_none() {
+            if let Some(voice) = chat_voice {
+                self.0
+                    .insert(("speech".to_string(), "voice".to_string()), voice);
+            }
+        }
+
+        let chat_rate = self.get("chat", "rate", "");
+        if !chat_rate.is_empty() && self.get("speech", "rate", "190") == "190" {
+            self.0
+                .insert(("speech".to_string(), "rate".to_string()), chat_rate);
+        }
+
+        self.0.remove(&("chat".to_string(), "voice".to_string()));
+        self.0.remove(&("chat".to_string(), "rate".to_string()));
+    }
+
+    fn remove_obsolete_keys(&mut self) {
+        self.0.retain(|(section, key), _| {
+            !(section == "hotkey"
+                || section == "output"
+                || section.starts_with("model:") && key == "name"
+                || section == "audio" && matches!(key.as_str(), "beep_start" | "beep_stop"))
+        });
     }
 }
 
@@ -327,7 +470,7 @@ mod tests {
         let mut ini = Ini::default();
         ini.merge(include_str!("../resources/config.default.ini"));
         ini.merge(input);
-        Config::from_ini(ini)
+        Config::from_ini(&mut ini)
     }
 
     #[test]
@@ -361,6 +504,55 @@ mod tests {
             .model_choices()
             .iter()
             .any(|choice| choice.id == "e4b-q4km"));
+    }
+
+    #[test]
+    fn migrates_old_chat_voice_to_speech() {
+        let mut ini = Ini::default();
+        ini.merge(include_str!("../resources/config.default.ini"));
+        ini.merge(
+            r#"
+            [chat]
+            voice = Samantha
+            rate = 220
+            "#,
+        );
+
+        ini.migrate_old_speech_defaults();
+
+        assert_eq!(ini.get("speech", "voice", ""), "Samantha");
+        assert_eq!(ini.get("speech", "rate", ""), "220");
+        assert_eq!(ini.get("chat", "voice", "missing"), "missing");
+        assert_eq!(ini.get("chat", "rate", "missing"), "missing");
+    }
+
+    #[test]
+    fn removes_obsolete_default_keys() {
+        let mut ini = Ini::default();
+        ini.merge(
+            r#"
+            [hotkey]
+            key = right_option
+
+            [audio]
+            beep_start = none
+            beep_stop = none
+
+            [model:e2b-qat]
+            name = gemma-4-E2B_q4_0-it
+
+            [output]
+            inject = paste
+            "#,
+        );
+
+        ini.remove_obsolete_keys();
+
+        assert_eq!(ini.get("hotkey", "key", "missing"), "missing");
+        assert_eq!(ini.get("audio", "beep_start", "missing"), "missing");
+        assert_eq!(ini.get("audio", "beep_stop", "missing"), "missing");
+        assert_eq!(ini.get("model:e2b-qat", "name", "missing"), "missing");
+        assert_eq!(ini.get("output", "inject", "missing"), "missing");
     }
 
     #[test]
@@ -444,7 +636,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_chat_voice_and_context() {
+    fn parses_legacy_chat_voice_and_context() {
         let cfg = config_from(
             r#"
             [chat]
@@ -454,21 +646,87 @@ mod tests {
             "#,
         );
 
-        assert_eq!(cfg.chat.voice.as_deref(), Some("Samantha"));
-        assert_eq!(cfg.chat.rate, 220);
+        assert_eq!(cfg.speech.voice.as_deref(), Some("Samantha"));
+        assert_eq!(cfg.speech.rate, 220);
         assert_eq!(cfg.chat.context_seconds, 90);
     }
 
     #[test]
-    fn blank_chat_voice_uses_system_default() {
+    fn blank_speech_voice_uses_system_default() {
         let cfg = config_from(
             r#"
-            [chat]
+            [speech]
             voice =
             "#,
         );
 
-        assert!(cfg.chat.voice.is_none());
+        assert!(cfg.speech.voice.is_none());
+    }
+
+    #[test]
+    fn parses_kokoro_speech_config() {
+        let cfg = config_from(
+            r#"
+            [speech]
+            backend = kokoro
+            kokoro_model_dir = /tmp/kokoro
+            kokoro_sid = 7
+            kokoro_speed = 1.2
+            kokoro_lang = en-us
+            kokoro_threads = 4
+            "#,
+        );
+
+        assert_eq!(cfg.speech.backend, "kokoro");
+        assert_eq!(cfg.speech.kokoro.model_dir, "/tmp/kokoro");
+        assert_eq!(cfg.speech.kokoro.sid, 7);
+        assert_eq!(cfg.speech.kokoro.speed, 1.2);
+        assert_eq!(cfg.speech.kokoro.lang, "en-us");
+        assert_eq!(cfg.speech.kokoro.threads, 4);
+    }
+
+    #[test]
+    fn parses_supertonic_speech_config() {
+        let cfg = config_from(
+            r#"
+            [speech]
+            backend = supertonic
+            supertonic_model_dir = /tmp/supertonic
+            supertonic_sid = 2
+            supertonic_speed = 0.9
+            supertonic_lang = de
+            supertonic_steps = 6
+            supertonic_threads = 3
+            "#,
+        );
+
+        assert_eq!(cfg.speech.backend, "supertonic");
+        assert_eq!(cfg.speech.supertonic.model_dir, "/tmp/supertonic");
+        assert_eq!(cfg.speech.supertonic.sid, 2);
+        assert_eq!(cfg.speech.supertonic.speed, 0.9);
+        assert_eq!(cfg.speech.supertonic.lang, "de");
+        assert_eq!(cfg.speech.supertonic.steps, 6);
+        assert_eq!(cfg.speech.supertonic.threads, 3);
+    }
+
+    #[test]
+    fn parses_vad_config() {
+        let cfg = config_from(
+            r#"
+            [vad]
+            enabled = false
+            threshold = 0.62
+            min_speech_duration_ms = 180
+            min_silence_duration_ms = 220
+            speech_pad_ms = 45
+            "#,
+        );
+
+        assert!(!cfg.vad.enabled);
+        assert_eq!(cfg.vad.threshold, 0.62);
+        assert_eq!(cfg.vad.min_speech_duration_ms, 180);
+        assert_eq!(cfg.vad.min_silence_duration_ms, 220);
+        assert_eq!(cfg.vad.speech_pad_ms, 45);
     }
 
     #[test]
@@ -495,11 +753,13 @@ mod tests {
             r#"
             [logging]
             enabled = false
+            debug = true
             path = /tmp/yappr-test.log
             "#,
         );
 
         assert!(!cfg.logging.enabled);
+        assert!(cfg.logging.debug);
         assert_eq!(cfg.logging.path, "/tmp/yappr-test.log");
     }
 
@@ -518,7 +778,7 @@ mod tests {
             endpoint = http://127.0.0.1:9090/v1/chat/completions
             port = 9090
 
-            [chat]
+            [speech]
             voice = Alex
 
             [search]
@@ -534,7 +794,7 @@ mod tests {
             "http://127.0.0.1:9090/v1/chat/completions"
         );
         assert_eq!(cfg.server.port, 9090);
-        assert_eq!(cfg.chat.voice.as_deref(), Some("Alex"));
+        assert_eq!(cfg.speech.voice.as_deref(), Some("Alex"));
         assert_eq!(cfg.search.endpoint, "http://localhost:7777/search");
     }
 

@@ -13,6 +13,8 @@ pub struct Recording {
 
 pub struct CapturedAudio {
     pub wav: Vec<u8>,
+    pub pcm: Vec<f32>,
+    pub sample_rate: u32,
     pub peak: f32,
     pub seconds: f32,
     pub samples: usize,
@@ -226,6 +228,8 @@ fn encode_wav(
     }
     Ok(CapturedAudio {
         wav: cursor.into_inner(),
+        pcm: samples.to_vec(),
+        sample_rate,
         peak,
         seconds: samples.len() as f32 / sample_rate as f32,
         samples: samples.len(),

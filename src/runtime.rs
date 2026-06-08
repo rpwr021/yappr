@@ -1,11 +1,14 @@
 use crate::audio::{CapturedAudio, Recording};
 use crate::chat::{ChatClient, ChatMode};
-use crate::config::Config;
+use crate::config::{Config, SpeechConfig};
 use crate::inject;
 use crate::instance::InstanceLock;
-use crate::logger::log_line;
+use crate::logger::{debug_line, log_line};
+use crate::perms;
 use crate::server::ManagedServer;
+use crate::speech;
 use crate::ui;
+use crate::vad;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -20,6 +23,7 @@ pub struct Runtime {
     pub status: AtomicU8,
     pub menu_config: Config,
     audio_device: Mutex<Option<String>>,
+    speech: Mutex<SpeechConfig>,
     last_transcript: Mutex<Option<String>>,
     instance_lock: Mutex<Option<InstanceLock>>,
 }
@@ -40,6 +44,7 @@ impl Runtime {
         let (tx, rx) = mpsc::channel();
         let menu_config = cfg.clone();
         let audio_device = Mutex::new(cfg.audio.device.clone());
+        let speech = Mutex::new(cfg.speech.clone());
         let client = Arc::new(client);
         std::thread::spawn(move || audio_worker(cfg, client, server, rx));
         Arc::new(Self {
@@ -50,6 +55,7 @@ impl Runtime {
             status: AtomicU8::new(ui::IDLE),
             menu_config,
             audio_device,
+            speech,
             last_transcript: Mutex::new(None),
             instance_lock: Mutex::new(None),
         })
@@ -69,7 +75,7 @@ impl Runtime {
         let epoch = self.epoch.fetch_add(1, Ordering::SeqCst) + 1;
         if self.busy.swap(false, Ordering::SeqCst) {
             log_line("busy: interrupted by new hotkey press");
-            inject::stop_speech();
+            speech::stop();
         }
         if let Err(err) = self.tx.send(HotkeyCommand::Start { chat, epoch }) {
             log_line(format!("hotkey command failed: {err}"));
@@ -131,7 +137,106 @@ impl Runtime {
                     Err(err) => log_line(format!("language save failed: {err}")),
                 }
             }
-            _ => log_line(format!("menu event ignored: {id}")),
+            id if id.starts_with("speech_backend:") => {
+                let backend = id.trim_start_matches("speech_backend:");
+                let already_selected = self
+                    .speech
+                    .lock()
+                    .map(|speech| speech.backend == backend)
+                    .unwrap_or(false);
+                if already_selected {
+                    return;
+                }
+                match Config::set_user_value("speech", "backend", backend) {
+                    Ok(()) => {
+                        self.update_speech(|speech| speech.backend = backend.to_string());
+                        ui::select_menu_item("speech_backend", id);
+                        log_line(format!("speech backend selected: {backend}"));
+                    }
+                    Err(err) => log_line(format!("speech backend save failed: {err}")),
+                }
+            }
+            id if id == "speech_voice:" || id.starts_with("speech_voice:") => {
+                let voice = id.trim_start_matches("speech_voice:");
+                let saved = Config::set_user_value("speech", "backend", "say")
+                    .and_then(|()| Config::set_user_value("speech", "voice", voice));
+                match saved {
+                    Ok(()) => {
+                        self.update_speech(|speech| {
+                            speech.backend = "say".to_string();
+                            speech.voice = (!voice.is_empty()).then_some(voice.to_string());
+                        });
+                        ui::select_menu_item("speech_backend", "speech_backend:say");
+                        ui::select_menu_item("speech_voice", id);
+                        log_line(format!(
+                            "macOS speech voice selected: {}; backend=say",
+                            if voice.is_empty() {
+                                "System Default"
+                            } else {
+                                voice
+                            }
+                        ));
+                    }
+                    Err(err) => log_line(format!("speech voice save failed: {err}")),
+                }
+            }
+            id if id.starts_with("supertonic_sid:") => {
+                let sid = id.trim_start_matches("supertonic_sid:");
+                let saved = Config::set_user_value("speech", "backend", "supertonic")
+                    .and_then(|()| Config::set_user_value("speech", "supertonic_sid", sid));
+                match saved {
+                    Ok(()) => {
+                        if let Ok(parsed) = sid.parse() {
+                            self.update_speech(|speech| {
+                                speech.backend = "supertonic".to_string();
+                                speech.supertonic.sid = parsed;
+                            });
+                            ui::select_menu_item("speech_backend", "speech_backend:supertonic");
+                            ui::select_menu_item("supertonic_sid", id);
+                        }
+                        log_line(format!(
+                            "supertonic voice selected: {sid}; backend=supertonic"
+                        ));
+                    }
+                    Err(err) => log_line(format!("supertonic voice save failed: {err}")),
+                }
+            }
+            id if id.starts_with("kokoro_sid:") => {
+                let sid = id.trim_start_matches("kokoro_sid:");
+                let Ok(parsed) = sid.parse() else {
+                    log_line(format!("kokoro speaker ignored: invalid sid {sid}"));
+                    return;
+                };
+                let already_selected = self
+                    .speech
+                    .lock()
+                    .map(|speech| speech.backend == "kokoro" && speech.kokoro.sid == parsed)
+                    .unwrap_or(false);
+                if already_selected {
+                    return;
+                }
+                let saved = Config::set_user_value("speech", "backend", "kokoro")
+                    .and_then(|()| Config::set_user_value("speech", "kokoro_sid", sid));
+                match saved {
+                    Ok(()) => {
+                        self.update_speech(|speech| {
+                            speech.backend = "kokoro".to_string();
+                            speech.kokoro.sid = parsed;
+                        });
+                        ui::select_menu_item("speech_backend", "speech_backend:kokoro");
+                        ui::select_menu_item("kokoro_sid", id);
+                        log_line(format!("kokoro speaker selected: {sid}; backend=kokoro"));
+                    }
+                    Err(err) => log_line(format!("kokoro speaker save failed: {err}")),
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn update_speech(&self, update: impl FnOnce(&mut SpeechConfig)) {
+        if let Ok(mut speech) = self.speech.lock() {
+            update(&mut speech);
         }
     }
 }
@@ -259,8 +364,25 @@ fn process_recording(
 ) {
     if captured.peak < 0.001 {
         set_status(ui::ERROR);
-        log_line("No audio - grant Microphone access to Yappr");
+        log_line(format!("no audio captured; {}", perms::report().log_summary()));
         return;
+    }
+    if cfg.vad.enabled {
+        match vad::detect(&captured.pcm, captured.sample_rate, &cfg.vad) {
+            Ok(decision) if decision.has_speech => log_line(format!(
+                "vad: speech detected segments={} speech_seconds={:.2}",
+                decision.segments, decision.speech_seconds
+            )),
+            Ok(_) => {
+                set_status(ui::IDLE);
+                log_line(format!(
+                    "vad: no speech detected; skipping ASR (threshold={:.2})",
+                    cfg.vad.threshold
+                ));
+                return;
+            }
+            Err(err) => log_line(format!("vad failed: {err}; continuing without VAD")),
+        }
     }
     set_status(ui::TRANSCRIBING);
     let text = match client.transcribe_wav(&captured.wav) {
@@ -279,7 +401,7 @@ fn process_recording(
         log_line("transcript discarded: interrupted");
         return;
     }
-    log_line(format!("heard: {text}"));
+    debug_line(format!("heard: {text}"));
     if let Some(runtime) = RUNTIME.get() {
         if let Ok(mut transcript) = runtime.last_transcript.lock() {
             *transcript = Some(text.clone());
@@ -293,12 +415,13 @@ fn process_recording(
                     log_line("answer discarded: interrupted");
                     return;
                 }
-                log_line(format!("answer: {answer}"));
+                debug_line(format!("answer: {answer}"));
                 set_status(ui::SPEAKING);
-                if let Err(err) = inject::say(&answer, cfg.chat.voice.as_deref(), cfg.chat.rate) {
+                let speech_cfg = current_speech().unwrap_or_else(|| cfg.speech.clone());
+                if let Err(err) = speech::speak(&answer, &speech_cfg) {
                     if is_current(epoch) {
                         set_status(ui::ERROR);
-                        log_line(format!("say failed: {err}"));
+                        log_line(format!("speech failed: {err}"));
                     }
                 }
             }
@@ -321,6 +444,12 @@ fn process_recording(
     if is_current(epoch) {
         set_status(ui::IDLE);
     }
+}
+
+fn current_speech() -> Option<SpeechConfig> {
+    RUNTIME
+        .get()
+        .and_then(|runtime| runtime.speech.lock().ok().map(|speech| speech.clone()))
 }
 
 fn is_current(epoch: u64) -> bool {

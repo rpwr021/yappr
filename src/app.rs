@@ -8,12 +8,13 @@ use crate::logger;
 use crate::perms;
 use crate::runtime::Runtime;
 use crate::server::{self, ManagedServer};
+use crate::speech;
 use std::fs;
 use std::path::PathBuf;
 
 pub fn run(args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
     let cfg = Config::load()?;
-    logger::init(cfg.logging.enabled, &cfg.logging.path);
+    logger::init(cfg.logging.enabled, cfg.logging.debug, &cfg.logging.path);
 
     if args.iter().any(|arg| arg == "--check") {
         print_checks(&cfg);
@@ -45,6 +46,11 @@ pub fn run(args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
+    if let Some(text) = string_arg(&args, "--speak") {
+        speech::speak(text, &cfg.speech)?;
+        return Ok(());
+    }
+
     if let Some(path) = arg_value(&args, "--wav") {
         let _server = start_backend(&cfg)?;
         let wav = fs::read(path)?;
@@ -65,7 +71,7 @@ pub fn run(args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
         println!("heard: {question}");
         let answer = client.answer(&question, ChatMode::Spoken)?;
         println!("answer: {answer}");
-        inject::say(&answer, cfg.chat.voice.as_deref(), cfg.chat.rate)?;
+        speech::speak(&answer, &cfg.speech)?;
         return Ok(());
     }
 
@@ -110,21 +116,47 @@ fn print_checks(cfg: &Config) {
     println!("model mmproj file: {}", cfg.model.mmproj);
     println!("model ctx_size: {}", cfg.model.ctx_size);
     println!("model ngl: {}", cfg.model.ngl);
+    println!("vad enabled: {}", cfg.vad.enabled);
+    println!("vad threshold: {}", cfg.vad.threshold);
     println!(
-        "chat voice: {}",
-        cfg.chat.voice.as_deref().unwrap_or("system default")
+        "vad min_speech_duration_ms: {}",
+        cfg.vad.min_speech_duration_ms
     );
-    println!("chat rate: {}", cfg.chat.rate);
+    println!(
+        "vad min_silence_duration_ms: {}",
+        cfg.vad.min_silence_duration_ms
+    );
+    println!("vad speech_pad_ms: {}", cfg.vad.speech_pad_ms);
     println!("chat context_seconds: {}", cfg.chat.context_seconds);
+    println!("speech backend: {}", cfg.speech.backend);
+    println!(
+        "speech voice: {}",
+        cfg.speech.voice.as_deref().unwrap_or("system default")
+    );
+    println!("speech rate: {}", cfg.speech.rate);
+    println!("supertonic model_dir: {}", cfg.speech.supertonic.model_dir);
+    println!("supertonic sid: {}", cfg.speech.supertonic.sid);
+    println!("supertonic speed: {}", cfg.speech.supertonic.speed);
+    println!("supertonic lang: {}", cfg.speech.supertonic.lang);
+    println!("supertonic steps: {}", cfg.speech.supertonic.steps);
+    println!("supertonic threads: {}", cfg.speech.supertonic.threads);
+    println!("kokoro model_dir: {}", cfg.speech.kokoro.model_dir);
+    println!("kokoro sid: {}", cfg.speech.kokoro.sid);
+    println!("kokoro speed: {}", cfg.speech.kokoro.speed);
+    println!("kokoro lang: {}", cfg.speech.kokoro.lang);
+    println!("kokoro threads: {}", cfg.speech.kokoro.threads);
     println!("logging enabled: {}", cfg.logging.enabled);
+    println!("logging debug: {}", cfg.logging.debug);
     println!("logging path: {}", cfg.logging.path);
     println!("search enabled: {}", cfg.search.enabled);
     println!("search endpoint: {}", cfg.search.endpoint);
     println!("search max_results: {}", cfg.search.max_results);
     println!("search timeout: {}s", cfg.search.timeout_secs);
-    println!("input monitoring: {}", perms::input_monitoring_status());
-    println!("accessibility: {}", perms::accessibility_status());
-    println!("microphone: {}", perms::microphone_status());
+    let permissions = perms::report();
+    println!("permissions: {}", permissions.log_summary());
+    println!("input monitoring: {}", permissions.input_monitoring);
+    println!("accessibility: {}", permissions.accessibility);
+    println!("microphone: {}", permissions.microphone);
     println!(
         "llama-server: {:?}",
         server::resolve_binary(&cfg.server.binary)
@@ -148,7 +180,7 @@ fn string_arg<'a>(args: &'a [String], key: &str) -> Option<&'a str> {
 
 fn print_usage() {
     eprintln!(
-        "Yappr Rust shell\n\n  yappr [--app]\n  yappr --check\n  yappr --record-test [--seconds 3]\n  yappr --serve\n  yappr --wav audio.wav [--paste]\n  yappr --ask-wav audio.wav\n\nDefault app mode: hold Right Option to dictate; hold Cmd+Right Option to chat."
+        "Yappr Rust shell\n\n  yappr [--app]\n  yappr --check\n  yappr --record-test [--seconds 3]\n  yappr --serve\n  yappr --speak text\n  yappr --wav audio.wav [--paste]\n  yappr --ask-wav audio.wav\n\nDefault app mode: hold Right Option to dictate; hold Cmd+Right Option to chat."
     );
 }
 

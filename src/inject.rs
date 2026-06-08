@@ -28,21 +28,3 @@ pub fn copy_text(text: &str) -> Result<(), Box<dyn std::error::Error>> {
     }
     Ok(())
 }
-
-pub fn say(text: &str, voice: Option<&str>, rate: i32) -> Result<(), Box<dyn std::error::Error>> {
-    let mut command = Command::new("/usr/bin/say");
-    command.arg("-r").arg(rate.to_string());
-    if let Some(voice) = voice {
-        command.arg("-v").arg(voice);
-    }
-    command.arg(text);
-    let status = command.status()?;
-    if !status.success() {
-        return Err("say failed".into());
-    }
-    Ok(())
-}
-
-pub fn stop_speech() {
-    let _ = Command::new("/usr/bin/killall").arg("say").status();
-}

@@ -21,8 +21,11 @@ fi
 
 SIGN_IDENTITY="${YAPPR_CODESIGN_IDENTITY:-}"
 if [ -z "$SIGN_IDENTITY" ]; then
-  SIGN_IDENTITY="$(security find-certificate -c "Yappr Self-Signed" -Z \
-    ~/Library/Keychains/login.keychain-db 2>/dev/null | awk '/SHA-1/{print $3}' || true)"
+  SIGN_IDENTITY="$(security find-identity -v -p codesigning \
+    ~/Library/Keychains/login.keychain-db 2>/dev/null | awk -F '"' '/Yappr Self-Signed/{print $2; exit}' || true)"
+fi
+if [ -z "$SIGN_IDENTITY" ]; then
+  SIGN_IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null | awk -F '"' '/\\)/{print $2; exit}' || true)"
 fi
 
 if [ -n "${SIGN_IDENTITY:-}" ]; then
@@ -35,3 +38,4 @@ fi
 
 echo "Built $APP"
 echo "Diagnostics: $APP/Contents/MacOS/Yappr --check"
+echo "Not installed. Use ./scripts/run.sh --build to install /Applications/Yappr.app and launch it."

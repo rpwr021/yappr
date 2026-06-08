@@ -3,15 +3,20 @@
 # login keychain, so build_app.sh produces a constant signature across rebuilds
 # and macOS keeps your Input Monitoring / Accessibility grants.
 #
-# Run once. Safe to re-run (skips if the cert already exists).
+# Run once. Safe to re-run (skips if the signing identity already exists).
 set -euo pipefail
 
 NAME="Yappr Self-Signed"
 KEYCHAIN="$HOME/Library/Keychains/login.keychain-db"
 
-if security find-certificate -c "$NAME" "$KEYCHAIN" >/dev/null 2>&1; then
-  echo "'$NAME' already exists in the login keychain."
+if security find-identity -v -p codesigning "$KEYCHAIN" | grep -F "$NAME" >/dev/null 2>&1; then
+  echo "'$NAME' signing identity already exists in the login keychain."
   exit 0
+fi
+
+if security find-certificate -c "$NAME" "$KEYCHAIN" >/dev/null 2>&1; then
+  echo "Removing stale '$NAME' certificate without a usable private key."
+  security delete-certificate -c "$NAME" "$KEYCHAIN"
 fi
 
 tmp="$(mktemp -d)"
@@ -34,6 +39,6 @@ openssl req -x509 -newkey rsa:2048 -keyout "$tmp/k.key" -out "$tmp/c.crt" \
 openssl pkcs12 -export -inkey "$tmp/k.key" -in "$tmp/c.crt" \
   -out "$tmp/c.p12" -name "$NAME" -passout pass:yappr -legacy -macalg sha1 >/dev/null 2>&1
 
-security import "$tmp/c.p12" -k "$KEYCHAIN" -P "yappr" -T /usr/bin/codesign
+security import "$tmp/c.p12" -k "$KEYCHAIN" -P "yappr" -A -T /usr/bin/codesign
 rm -rf "$tmp"
 echo "Created '$NAME'. build_app.sh will now sign Yappr with a stable identity."

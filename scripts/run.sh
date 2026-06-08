@@ -21,8 +21,7 @@ sleep 1
 rm -f "$HOME/.yappr.lock"
 
 # install to the canonical location (replace in place to keep the same path)
-rm -rf "$DEST"
-cp -R dist/Yappr.app "$DEST"
+ditto dist/Yappr.app "$DEST"
 # refresh LaunchServices so Spotlight resolves the new copy at this path
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
   -f "$DEST" 2>/dev/null || true

@@ -2,9 +2,10 @@ use crate::config::Config;
 use crate::expand_tilde;
 use crate::logger::log_line;
 use reqwest::blocking::Client;
+use serde::Deserialize;
 use std::fs;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -99,7 +100,15 @@ pub fn start(
     mmproj: &PathBuf,
 ) -> Result<ManagedServer, Box<dyn std::error::Error>> {
     if healthy(cfg.server.port) {
-        return Ok(ManagedServer { child: None });
+        return if serves_model(cfg.server.port, weights) {
+            Ok(ManagedServer { child: None })
+        } else {
+            Err(format!(
+                "port {} already has a llama-server running with a different model; stop it before launching Yappr",
+                cfg.server.port
+            )
+            .into())
+        };
     }
     let binary = resolve_binary(&cfg.server.binary).ok_or("llama-server binary not found")?;
     let stdout = server_log_file(&cfg.logging)?;
@@ -152,6 +161,41 @@ fn healthy(port: u16) -> bool {
         .unwrap_or(false)
 }
 
+fn serves_model(port: u16, weights: &Path) -> bool {
+    let url = format!("http://127.0.0.1:{port}/props");
+    let props = Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .and_then(|client| client.get(url).send())
+        .and_then(|response| response.error_for_status())
+        .and_then(|response| response.json::<ServerProps>());
+    match props {
+        Ok(props) if model_path_matches(&props.model_path, weights) => true,
+        Ok(props) => {
+            log_line(format!(
+                "llama-server model mismatch: running='{}' configured='{}'",
+                props.model_path,
+                weights.display()
+            ));
+            false
+        }
+        Err(err) => {
+            log_line(format!("llama-server model check failed: {err}"));
+            false
+        }
+    }
+}
+
+fn model_path_matches(running: &str, configured: &Path) -> bool {
+    let configured = configured.to_string_lossy();
+    running == configured || running.ends_with(configured.as_ref())
+}
+
+#[derive(Deserialize)]
+struct ServerProps {
+    model_path: String,
+}
+
 fn model_snapshot_dir(cfg: &Config) -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
@@ -185,4 +229,34 @@ fn download_model_file(
     io::copy(&mut response, &mut file)?;
     fs::rename(tmp, dest)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::model_path_matches;
+    use std::path::PathBuf;
+
+    #[test]
+    fn accepts_exact_or_suffix_model_path_match() {
+        let configured = PathBuf::from("/cache/models/gemma-4-E2B_q4_0-it.gguf");
+
+        assert!(model_path_matches(
+            "/cache/models/gemma-4-E2B_q4_0-it.gguf",
+            &configured
+        ));
+        assert!(model_path_matches(
+            "/private/cache/models/gemma-4-E2B_q4_0-it.gguf",
+            &configured
+        ));
+    }
+
+    #[test]
+    fn rejects_different_model_path() {
+        let configured = PathBuf::from("/cache/models/gemma-4-E2B_q4_0-it.gguf");
+
+        assert!(!model_path_matches(
+            "/cache/models/gemma-4-E4B_q4_0-it.gguf",
+            &configured
+        ));
+    }
 }
