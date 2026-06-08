@@ -118,6 +118,5 @@ cargo test
 cargo clippy --all-targets -- -D warnings
 ```
 
-GitHub Actions updates the `v0.1` release line on every `main` push. Each main
-build gets an incrementing `0.1.<run_number>` app version. Immutable versioned
-releases are produced from explicit `v*` tags.
+GitHub Actions creates a new `v0.1.<run_number>` release on every `main` push.
+Explicit `v*` tags produce releases with that exact version.

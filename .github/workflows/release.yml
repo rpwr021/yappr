@@ -49,13 +49,14 @@ jobs:
           else
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git tag -f "$YAPPR_RELEASE_LINE" "$GITHUB_SHA"
-            git push --force origin "refs/tags/$YAPPR_RELEASE_LINE"
             VERSION="${YAPPR_RELEASE_LINE#v}.${GITHUB_RUN_NUMBER}"
-            echo "tag=${YAPPR_RELEASE_LINE}" >> "$GITHUB_OUTPUT"
+            TAG="v${VERSION}"
+            git tag "$TAG" "$GITHUB_SHA"
+            git push origin "refs/tags/$TAG"
+            echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
             echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
             echo "build=${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
-            echo "title=${YAPPR_RELEASE_LINE} build ${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+            echo "title=${TAG}" >> "$GITHUB_OUTPUT"
             echo "notes=Automated build ${VERSION} from ${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
           fi
       - name: Package app
