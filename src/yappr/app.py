@@ -191,6 +191,7 @@ class Recorder:
         self.device_index = device_index
         self.max_seconds = max_seconds
         self.tail_seconds = tail_seconds
+        self.last_peak = 0.0
         self._q = queue.Queue()
         self._stream = None
         self._frames = []
@@ -242,6 +243,10 @@ class Recorder:
             audio = audio[:max_samples]
         if len(audio) < int(0.2 * self.samplerate):  # < 200ms, ignore
             return None
+        # Expose peak amplitude so callers can detect a silent mic (the classic
+        # signature of a missing Microphone permission: capture succeeds but is
+        # all zeros).
+        self.last_peak = float(np.abs(audio).max())
         pcm16 = np.clip(audio * 32767, -32768, 32767).astype(np.int16)
         buf = io.BytesIO()
         with wave.open(buf, "wb") as w:
@@ -910,7 +915,16 @@ class YapprApp(rumps.App):
                 log("no audio captured")
                 self._flash(ICON_ERR, "Nothing captured")
                 return
-            log(f"captured {len(wav)} bytes wav; calling model ({mode})")
+            # Silent capture = missing Microphone permission (macOS feeds zeros).
+            peak = getattr(self.recorder, "last_peak", 1.0)
+            log(f"captured {len(wav)} bytes wav (peak={peak:.4f}); calling model ({mode})")
+            if peak < 0.001:
+                log("SILENT audio — Microphone permission likely missing")
+                self._flash(ICON_ERR, "No audio — grant Microphone to Yappr", revert_after=4.0)
+                notify("Yappr", "Microphone not working",
+                       "Enable Yappr in System Settings > Privacy & Security > "
+                       "Microphone, then try again.")
+                return
             self._set_state("thinking")
             endpoint = self.cfg.get("server", "endpoint")
             timeout = self.cfg.getint("server", "timeout", fallback=60)

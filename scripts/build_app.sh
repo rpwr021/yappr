@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Build Yappr.app via py2app (alias mode) so Yappr gets its OWN macOS permission
-# identity (its own signed binary), instead of inheriting Terminal's / uv's.
-#
-# Alias mode references this project + venv (fast, for personal use). For a
-# distributable standalone app, drop the "-A".
+# Build Yappr.app via py2app (standalone) so the app embeds its OWN signed Python
+# interpreter. Alias mode (-A) symlinks to the venv python, whose ad-hoc identity
+# does NOT match the Yappr signature — that breaks TCC (re-prompts every launch,
+# silent mic/hotkey failures). Standalone makes the running process truly
+# com.rpwr021.yappr, so permission grants stick.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."   # repo root
@@ -14,6 +14,9 @@ if [ -f pyproject.toml ]; then mv pyproject.toml _pyproject.toml.bak; HID=1; fi
 trap '[ "$HID" = 1 ] && mv _pyproject.toml.bak pyproject.toml' EXIT
 
 rm -rf build dist
+# NOTE: standalone (no -A) is abandoned — py2app can't bundle conda/standalone
+# Python cleanly (libffi / zlib failures). Alias mode runs for personal use; the
+# real distributable is the planned Rust rewrite (see docs/RUST_REWRITE_HANDOFF.md).
 uv run python setup.py py2app -A
 
 # Sign with the stable self-signed "Yappr Self-Signed" identity so the signature
