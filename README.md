@@ -88,4 +88,5 @@ cargo test
 cargo clippy --all-targets -- -D warnings
 ```
 
-Release builds are produced by GitHub Actions from `v*` tags.
+GitHub Actions publishes a `latest` release on every `main` push. Versioned
+releases are produced from `v*` tags.
