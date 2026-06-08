@@ -56,11 +56,20 @@ fi
 
 cat <<'EOF'
 
-[yappr] Grant Yappr in System Settings > Privacy & Security:
-  - Input Monitoring
-  - Accessibility
-  - Microphone
+[yappr] Installed and launched.
 
-Hold Right Option to dictate. Hold Cmd+Right Option to chat.
-Logs: tail -f ~/.yappr/yappr.log
+Controls:
+  - Hold Right Option: dictate into the active app
+  - Hold Cmd + Right Option: ask a spoken question
+  - Menu-bar icon: microphone, model, language, copy transcript, quit
+
+Grant Yappr in System Settings > Privacy & Security:
+  - Input Monitoring: global hotkey
+  - Accessibility: paste dictated text
+  - Microphone: record while the hotkey is held
+
+Config: ~/.yappr/config.ini
+Check:  /Applications/Yappr.app/Contents/MacOS/Yappr --check
+Logs:   tail -f ~/.yappr/yappr.log
+Disable logs: set [logging] enabled = false in ~/.yappr/config.ini, then relaunch.
 EOF

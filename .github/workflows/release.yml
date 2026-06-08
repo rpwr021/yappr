@@ -9,11 +9,16 @@ on:
 permissions:
   contents: read
 
+env:
+  YAPPR_RELEASE_LINE: "v0.1"
+
 jobs:
   check:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - run: rustup toolchain install stable --profile minimal
       - run: rustup default stable
       - run: cargo test --locked
@@ -27,25 +32,38 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - run: rustup toolchain install stable --profile minimal
       - run: rustup default stable
-      - run: ./scripts/package_app.sh
       - name: Pick release tag
         id: release_tag
         run: |
           if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            VERSION="${GITHUB_REF_NAME#v}"
             echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+            echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+            echo "build=${VERSION}" >> "$GITHUB_OUTPUT"
             echo "title=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
             echo "notes=Yappr ${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
           else
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git tag -f latest "$GITHUB_SHA"
-            git push --force origin refs/tags/latest
-            echo "tag=latest" >> "$GITHUB_OUTPUT"
-            echo "title=Latest main build" >> "$GITHUB_OUTPUT"
-            echo "notes=Automated build from ${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+            git tag -f "$YAPPR_RELEASE_LINE" "$GITHUB_SHA"
+            git push --force origin "refs/tags/$YAPPR_RELEASE_LINE"
+            VERSION="${YAPPR_RELEASE_LINE#v}.${GITHUB_RUN_NUMBER}"
+            echo "tag=${YAPPR_RELEASE_LINE}" >> "$GITHUB_OUTPUT"
+            echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+            echo "build=${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+            echo "title=${YAPPR_RELEASE_LINE} build ${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+            echo "notes=Automated build ${VERSION} from ${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
           fi
+      - name: Package app
+        env:
+          YAPPR_VERSION: ${{ steps.release_tag.outputs.version }}
+          YAPPR_BUILD: ${{ steps.release_tag.outputs.build }}
+          YAPPR_RELEASE_TAG: ${{ steps.release_tag.outputs.tag }}
+        run: ./scripts/package_app.sh
       - name: Publish GitHub release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

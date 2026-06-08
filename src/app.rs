@@ -4,6 +4,7 @@ use crate::config::Config;
 use crate::hotkey;
 use crate::inject;
 use crate::instance::InstanceLock;
+use crate::logger;
 use crate::perms;
 use crate::runtime::Runtime;
 use crate::server::{self, ManagedServer};
@@ -12,6 +13,7 @@ use std::path::PathBuf;
 
 pub fn run(args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
     let cfg = Config::load()?;
+    logger::init(cfg.logging.enabled, &cfg.logging.path);
 
     if args.iter().any(|arg| arg == "--check") {
         print_checks(&cfg);
@@ -114,6 +116,8 @@ fn print_checks(cfg: &Config) {
     );
     println!("chat rate: {}", cfg.chat.rate);
     println!("chat context_seconds: {}", cfg.chat.context_seconds);
+    println!("logging enabled: {}", cfg.logging.enabled);
+    println!("logging path: {}", cfg.logging.path);
     println!("search enabled: {}", cfg.search.enabled);
     println!("search endpoint: {}", cfg.search.endpoint);
     println!("search max_results: {}", cfg.search.max_results);

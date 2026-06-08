@@ -1,6 +1,6 @@
 # Yappr
 
-![Yappr logo](.github/assets/yappr-logo.png)
+<img src=".github/assets/yappr-logo.png" alt="Yappr logo" width="96">
 
 Local push-to-talk dictation and voice chat for macOS.
 
@@ -59,6 +59,7 @@ rebuilding Yappr. Restart the app after editing.
 - `[server] endpoint`, `port`, `manage`, `binary`, `timeout`: llama-server host/port, whether Yappr starts it, and which binary to use.
 - `[chat] voice`, `rate`: macOS `say` voice and speech rate.
 - `[chat] context_seconds`: recent chat history included for follow-up questions.
+- `[logging] enabled`, `path`: app log switch and file path.
 - `[search] enabled`, `endpoint`, `max_results`, `timeout`: web search tool settings.
 
 When search is enabled, Yappr exposes a `web_search` tool to the local model.
@@ -79,6 +80,13 @@ Logs:
 tail -f ~/.yappr/yappr.log
 ```
 
+Disable logs with:
+
+```ini
+[logging]
+enabled = false
+```
+
 ## Development
 
 ```bash
@@ -88,5 +96,6 @@ cargo test
 cargo clippy --all-targets -- -D warnings
 ```
 
-GitHub Actions publishes a `latest` release on every `main` push. Versioned
-releases are produced from `v*` tags.
+GitHub Actions updates the `v0.1` release line on every `main` push. Each main
+build gets an incrementing `0.1.<run_number>` app version. Immutable versioned
+releases are produced from explicit `v*` tags.

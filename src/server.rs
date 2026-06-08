@@ -102,6 +102,8 @@ pub fn start(
         return Ok(ManagedServer { child: None });
     }
     let binary = resolve_binary(&cfg.server.binary).ok_or("llama-server binary not found")?;
+    let stdout = server_log_file(&cfg.logging)?;
+    let stderr = stdout.try_clone()?;
     let child = Command::new(binary)
         .arg("-m")
         .arg(weights)
@@ -116,14 +118,8 @@ pub fn start(
         .arg(&cfg.model.ngl)
         .arg("--port")
         .arg(cfg.server.port.to_string())
-        .stdout(Stdio::from(std::fs::File::create(
-            "/tmp/yappr-llama-server.log",
-        )?))
-        .stderr(Stdio::from(
-            std::fs::OpenOptions::new()
-                .append(true)
-                .open("/tmp/yappr-llama-server.log")?,
-        ))
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(stderr))
         .spawn()?;
     let start = Instant::now();
     while start.elapsed() < Duration::from_secs(120) {
@@ -133,6 +129,18 @@ pub fn start(
         std::thread::sleep(Duration::from_millis(500));
     }
     Err("llama-server did not become healthy within 120s".into())
+}
+
+fn server_log_file(
+    cfg: &crate::config::LoggingConfig,
+) -> Result<fs::File, Box<dyn std::error::Error>> {
+    if !cfg.enabled {
+        return Ok(fs::OpenOptions::new().write(true).open("/dev/null")?);
+    }
+    Ok(fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/tmp/yappr-llama-server.log")?)
 }
 
 fn healthy(port: u16) -> bool {

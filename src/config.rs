@@ -10,6 +10,7 @@ pub struct Config {
     pub audio: AudioConfig,
     pub language: LanguageConfig,
     pub chat: ChatConfig,
+    pub logging: LoggingConfig,
     pub search: SearchConfig,
 }
 
@@ -59,6 +60,12 @@ pub struct ChatConfig {
     pub voice: Option<String>,
     pub rate: i32,
     pub context_seconds: i64,
+}
+
+#[derive(Clone, Debug)]
+pub struct LoggingConfig {
+    pub enabled: bool,
+    pub path: String,
 }
 
 #[derive(Clone, Debug)]
@@ -149,6 +156,10 @@ impl Config {
                     .get("chat", "context_seconds", "60")
                     .parse()
                     .unwrap_or(60),
+            },
+            logging: LoggingConfig {
+                enabled: ini.get("logging", "enabled", "true").parse().unwrap_or(true),
+                path: ini.get("logging", "path", "~/.yappr/yappr.log"),
             },
             search: SearchConfig {
                 enabled: ini.get("search", "enabled", "true").parse().unwrap_or(true),
@@ -476,6 +487,20 @@ mod tests {
         assert_eq!(cfg.search.endpoint, "http://10.0.0.2:8888/search");
         assert_eq!(cfg.search.max_results, 3);
         assert_eq!(cfg.search.timeout_secs, 4);
+    }
+
+    #[test]
+    fn parses_logging_config() {
+        let cfg = config_from(
+            r#"
+            [logging]
+            enabled = false
+            path = /tmp/yappr-test.log
+            "#,
+        );
+
+        assert!(!cfg.logging.enabled);
+        assert_eq!(cfg.logging.path, "/tmp/yappr-test.log");
     }
 
     #[test]

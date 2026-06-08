@@ -12,6 +12,13 @@ cp resources/Info.plist "$APP/Contents/Info.plist"
 cp resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 cp target/release/yappr "$APP/Contents/MacOS/Yappr"
 
+if [ -n "${YAPPR_VERSION:-}" ]; then
+  plutil -replace CFBundleShortVersionString -string "$YAPPR_VERSION" "$APP/Contents/Info.plist"
+fi
+if [ -n "${YAPPR_BUILD:-}" ]; then
+  plutil -replace CFBundleVersion -string "$YAPPR_BUILD" "$APP/Contents/Info.plist"
+fi
+
 SIGN_IDENTITY="${YAPPR_CODESIGN_IDENTITY:-}"
 if [ -z "$SIGN_IDENTITY" ]; then
   SIGN_IDENTITY="$(security find-certificate -c "Yappr Self-Signed" -Z \
