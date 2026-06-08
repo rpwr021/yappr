@@ -84,7 +84,7 @@ fn start_backend(cfg: &Config) -> Result<Option<ManagedServer>, Box<dyn std::err
     if !cfg.server.manage {
         return Ok(None);
     }
-    let paths = server::model_paths(cfg);
+    let paths = server::ensure_model(cfg)?;
     let weights = paths
         .weights
         .ok_or("model weights not found in Hugging Face cache; download the configured model")?;
@@ -97,7 +97,27 @@ fn start_backend(cfg: &Config) -> Result<Option<ManagedServer>, Box<dyn std::err
 
 fn print_checks(cfg: &Config) {
     println!("config: {}", Config::user_config_path().display());
-    println!("endpoint: {}", cfg.server.endpoint);
+    println!("server endpoint: {}", cfg.server.endpoint);
+    println!("server port: {}", cfg.server.port);
+    println!("server manage: {}", cfg.server.manage);
+    println!("server binary: {}", cfg.server.binary);
+    println!("server timeout: {}s", cfg.server.timeout_secs);
+    println!("model active: {}", cfg.model.active);
+    println!("model repo: {}", cfg.model.repo);
+    println!("model weights file: {}", cfg.model.weights);
+    println!("model mmproj file: {}", cfg.model.mmproj);
+    println!("model ctx_size: {}", cfg.model.ctx_size);
+    println!("model ngl: {}", cfg.model.ngl);
+    println!(
+        "chat voice: {}",
+        cfg.chat.voice.as_deref().unwrap_or("system default")
+    );
+    println!("chat rate: {}", cfg.chat.rate);
+    println!("chat context_seconds: {}", cfg.chat.context_seconds);
+    println!("search enabled: {}", cfg.search.enabled);
+    println!("search endpoint: {}", cfg.search.endpoint);
+    println!("search max_results: {}", cfg.search.max_results);
+    println!("search timeout: {}s", cfg.search.timeout_secs);
     println!("input monitoring: {}", perms::input_monitoring_status());
     println!("accessibility: {}", perms::accessibility_status());
     println!("microphone: {}", perms::microphone_status());

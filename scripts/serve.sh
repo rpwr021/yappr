@@ -17,11 +17,11 @@ BIN="$HOME/.yappr/bin/llama-server"
 [ -n "$BIN" ] || { echo "llama-server not found; run engine/install.sh first"; exit 1; }
 
 # Resolve the model from the HF cache.
-SNAP="$(find "$HOME/.cache/huggingface/hub/models--google--gemma-4-E4B-it-qat-q4_0-gguf/snapshots" \
+SNAP="$(find "$HOME/.cache/huggingface/hub/models--google--gemma-4-E2B-it-qat-q4_0-gguf/snapshots" \
   -maxdepth 1 -mindepth 1 -type d 2>/dev/null | head -1)"
 [ -n "$SNAP" ] || { echo "model not in cache; launch the app once to download it"; exit 1; }
 
 exec "$BIN" \
-  -m "$SNAP/gemma-4-E4B_q4_0-it.gguf" \
-  --mmproj "$SNAP/gemma-4-E4B-it-mmproj.gguf" \
+  -m "$SNAP/gemma-4-E2B_q4_0-it.gguf" \
+  --mmproj "$SNAP/gemma-4-E2B-it-mmproj.gguf" \
   -ngl 99 -fa on -c 8192 --jinja --port "$PORT"

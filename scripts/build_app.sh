@@ -9,8 +9,8 @@ APP="dist/Yappr.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp resources/Info.plist "$APP/Contents/Info.plist"
+cp resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 cp target/release/yappr "$APP/Contents/MacOS/Yappr"
-cp -R resources/assets "$APP/Contents/Resources/" 2>/dev/null || true
 
 SIGN_IDENTITY="${YAPPR_CODESIGN_IDENTITY:-}"
 if [ -z "$SIGN_IDENTITY" ]; then

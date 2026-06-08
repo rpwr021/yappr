@@ -60,3 +60,18 @@ struct SearchResult {
     content: Option<String>,
     url: Option<String>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::truncate;
+
+    #[test]
+    fn truncates_long_search_snippets() {
+        assert_eq!(truncate("abcdef", 3), "abc...");
+    }
+
+    #[test]
+    fn leaves_short_search_snippets_unchanged() {
+        assert_eq!(truncate("abc", 3), "abc");
+    }
+}

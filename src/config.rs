@@ -84,10 +84,15 @@ impl Config {
             ini.merge(&contents);
         }
 
-        let active_model = ini.get("models", "active", "e4b-qat");
+        Ok(Self::from_ini(ini))
+    }
+
+    fn from_ini(mut ini: Ini) -> Self {
+        ini.migrate_old_model_defaults();
+        let active_model = ini.get("models", "active", "e2b-qat");
         let model_section = format!("model:{active_model}");
 
-        Ok(Self {
+        Self {
             server: ServerConfig {
                 endpoint: ini.get(
                     "server",
@@ -100,9 +105,9 @@ impl Config {
                 timeout_secs: ini.get("server", "timeout", "60").parse().unwrap_or(60),
             },
             model: ModelConfig {
-                repo: ini.model_value(&model_section, "repo", "google/gemma-4-E4B-it-qat-q4_0-gguf"),
-                weights: ini.model_value(&model_section, "weights", "gemma-4-E4B_q4_0-it.gguf"),
-                mmproj: ini.model_value(&model_section, "mmproj", "gemma-4-E4B-it-mmproj.gguf"),
+                repo: ini.model_value(&model_section, "repo", "google/gemma-4-E2B-it-qat-q4_0-gguf"),
+                weights: ini.model_value(&model_section, "weights", "gemma-4-E2B_q4_0-it.gguf"),
+                mmproj: ini.model_value(&model_section, "mmproj", "gemma-4-E2B-it-mmproj.gguf"),
                 ctx_size: ini.model_value(&model_section, "ctx_size", "8192"),
                 ngl: ini.model_value(&model_section, "ngl", "99"),
                 active: active_model,
@@ -151,7 +156,7 @@ impl Config {
                 max_results: ini.get("search", "max_results", "5").parse().unwrap_or(5),
                 timeout_secs: ini.get("search", "timeout", "15").parse().unwrap_or(15),
             },
-        })
+        }
     }
 
     pub fn user_config_path() -> PathBuf {
@@ -229,6 +234,40 @@ impl Ini {
         let fallback = self.get("model", key, default);
         self.get(section, key, &fallback)
     }
+
+    fn migrate_old_model_defaults(&mut self) {
+        self.0.retain(|(section, _), _| section != "model:e4b-q4km");
+        if self.get("models", "active", "") == "e4b-q4km" {
+            self.0.insert(
+                ("models".to_string(), "active".to_string()),
+                "e2b-qat".to_string(),
+            );
+        }
+
+        let old_repo = "google/gemma-4-E4B-it-qat-q4_0-gguf";
+        let old_weights = "gemma-4-E4B_q4_0-it.gguf";
+        if self.get("model", "repo", "") == old_repo
+            && self.get("model", "weights", "") == old_weights
+            && self.get("models", "active", "") == "e4b-qat"
+        {
+            self.0.insert(
+                ("models".to_string(), "active".to_string()),
+                "e2b-qat".to_string(),
+            );
+            self.0.insert(
+                ("model".to_string(), "repo".to_string()),
+                "google/gemma-4-E2B-it-qat-q4_0-gguf".to_string(),
+            );
+            self.0.insert(
+                ("model".to_string(), "weights".to_string()),
+                "gemma-4-E2B_q4_0-it.gguf".to_string(),
+            );
+            self.0.insert(
+                ("model".to_string(), "mmproj".to_string()),
+                "gemma-4-E2B-it-mmproj.gguf".to_string(),
+            );
+        }
+    }
 }
 
 impl std::fmt::Display for Ini {
@@ -266,5 +305,237 @@ fn non_empty(value: String) -> Option<String> {
         None
     } else {
         Some(trimmed.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Config, Ini};
+
+    fn config_from(input: &str) -> Config {
+        let mut ini = Ini::default();
+        ini.merge(include_str!("../resources/config.default.ini"));
+        ini.merge(input);
+        Config::from_ini(ini)
+    }
+
+    #[test]
+    fn migrates_old_e4b_default_to_e2b() {
+        let mut ini = Ini::default();
+        ini.merge(
+            r#"
+            [model]
+            repo = google/gemma-4-E4B-it-qat-q4_0-gguf
+            weights = gemma-4-E4B_q4_0-it.gguf
+            mmproj = gemma-4-E4B-it-mmproj.gguf
+
+            [models]
+            active = e4b-qat
+
+            [model:e4b-q4km]
+            label = Gemma 4 E4B Q4_K_M
+            "#,
+        );
+
+        ini.migrate_old_model_defaults();
+
+        assert_eq!(
+            ini.get("model", "repo", ""),
+            "google/gemma-4-E2B-it-qat-q4_0-gguf"
+        );
+        assert_eq!(ini.get("model", "weights", ""), "gemma-4-E2B_q4_0-it.gguf");
+        assert_eq!(ini.get("model", "mmproj", ""), "gemma-4-E2B-it-mmproj.gguf");
+        assert_eq!(ini.get("models", "active", ""), "e2b-qat");
+        assert!(!ini
+            .model_choices()
+            .iter()
+            .any(|choice| choice.id == "e4b-q4km"));
+    }
+
+    #[test]
+    fn leaves_custom_model_repo_alone() {
+        let mut ini = Ini::default();
+        ini.merge(
+            r#"
+            [model]
+            repo = custom/audio-model
+            weights = custom.gguf
+
+            [models]
+            active = custom
+
+            [model:custom]
+            label = Custom
+            "#,
+        );
+
+        ini.migrate_old_model_defaults();
+
+        assert_eq!(ini.get("model", "repo", ""), "custom/audio-model");
+        assert_eq!(ini.get("models", "active", ""), "custom");
+        assert!(ini
+            .model_choices()
+            .iter()
+            .any(|choice| choice.id == "custom"));
+    }
+
+    #[test]
+    fn parses_active_model_and_llama_params() {
+        let cfg = config_from(
+            r#"
+            [models]
+            active = local-audio
+
+            [model:local-audio]
+            label = Local Audio
+            repo = local/repo
+            weights = local.gguf
+            mmproj = local-mmproj.gguf
+            ctx_size = 4096
+            ngl = 42
+            "#,
+        );
+
+        assert_eq!(cfg.model.active, "local-audio");
+        assert_eq!(cfg.model.repo, "local/repo");
+        assert_eq!(cfg.model.weights, "local.gguf");
+        assert_eq!(cfg.model.mmproj, "local-mmproj.gguf");
+        assert_eq!(cfg.model.ctx_size, "4096");
+        assert_eq!(cfg.model.ngl, "42");
+        assert!(cfg
+            .model
+            .choices
+            .iter()
+            .any(|choice| choice.id == "local-audio" && choice.label == "Local Audio"));
+    }
+
+    #[test]
+    fn parses_server_overrides() {
+        let cfg = config_from(
+            r#"
+            [server]
+            endpoint = http://127.0.0.1:9999/v1/chat/completions
+            port = 9999
+            manage = false
+            binary = /tmp/llama-server
+            timeout = 17
+            "#,
+        );
+
+        assert_eq!(
+            cfg.server.endpoint,
+            "http://127.0.0.1:9999/v1/chat/completions"
+        );
+        assert_eq!(cfg.server.port, 9999);
+        assert!(!cfg.server.manage);
+        assert_eq!(cfg.server.binary, "/tmp/llama-server");
+        assert_eq!(cfg.server.timeout_secs, 17);
+    }
+
+    #[test]
+    fn parses_chat_voice_and_context() {
+        let cfg = config_from(
+            r#"
+            [chat]
+            voice = Samantha
+            rate = 220
+            context_seconds = 90
+            "#,
+        );
+
+        assert_eq!(cfg.chat.voice.as_deref(), Some("Samantha"));
+        assert_eq!(cfg.chat.rate, 220);
+        assert_eq!(cfg.chat.context_seconds, 90);
+    }
+
+    #[test]
+    fn blank_chat_voice_uses_system_default() {
+        let cfg = config_from(
+            r#"
+            [chat]
+            voice =
+            "#,
+        );
+
+        assert!(cfg.chat.voice.is_none());
+    }
+
+    #[test]
+    fn parses_search_tool_config() {
+        let cfg = config_from(
+            r#"
+            [search]
+            enabled = false
+            endpoint = http://10.0.0.2:8888/search
+            max_results = 3
+            timeout = 4
+            "#,
+        );
+
+        assert!(!cfg.search.enabled);
+        assert_eq!(cfg.search.endpoint, "http://10.0.0.2:8888/search");
+        assert_eq!(cfg.search.max_results, 3);
+        assert_eq!(cfg.search.timeout_secs, 4);
+    }
+
+    #[test]
+    fn user_config_overrides_defaults_without_rebuild() {
+        let cfg = config_from(
+            r#"
+            [models]
+            active = e4b-qat
+
+            [model:e4b-qat]
+            ctx_size = 16384
+            ngl = 12
+
+            [server]
+            endpoint = http://127.0.0.1:9090/v1/chat/completions
+            port = 9090
+
+            [chat]
+            voice = Alex
+
+            [search]
+            endpoint = http://localhost:7777/search
+            "#,
+        );
+
+        assert_eq!(cfg.model.active, "e4b-qat");
+        assert_eq!(cfg.model.ctx_size, "16384");
+        assert_eq!(cfg.model.ngl, "12");
+        assert_eq!(
+            cfg.server.endpoint,
+            "http://127.0.0.1:9090/v1/chat/completions"
+        );
+        assert_eq!(cfg.server.port, 9090);
+        assert_eq!(cfg.chat.voice.as_deref(), Some("Alex"));
+        assert_eq!(cfg.search.endpoint, "http://localhost:7777/search");
+    }
+
+    #[test]
+    fn parses_audio_and_language_options() {
+        let cfg = config_from(
+            r#"
+            [audio]
+            device = Studio Mic
+            samplerate = 24000
+            max_seconds = 12
+            tail_seconds = 0.8
+
+            [language]
+            source = English
+            target = Spanish
+            options = auto, English, Spanish
+            "#,
+        );
+
+        assert_eq!(cfg.audio.device.as_deref(), Some("Studio Mic"));
+        assert_eq!(cfg.audio.samplerate, 24000);
+        assert_eq!(cfg.audio.max_seconds, 12.0);
+        assert_eq!(cfg.audio.tail_seconds, 0.8);
+        assert_eq!(cfg.language.source, "English");
+        assert_eq!(cfg.language.target, "Spanish");
+        assert_eq!(cfg.language.options, ["auto", "English", "Spanish"]);
     }
 }

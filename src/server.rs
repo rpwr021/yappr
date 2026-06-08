@@ -1,6 +1,9 @@
 use crate::config::Config;
 use crate::expand_tilde;
+use crate::logger::log_line;
 use reqwest::blocking::Client;
+use std::fs;
+use std::io;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -40,11 +43,10 @@ pub fn resolve_binary(configured: &str) -> Option<PathBuf> {
 }
 
 pub fn model_paths(cfg: &Config) -> ModelPaths {
-    let base = dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".cache/huggingface/hub")
-        .join(format!("models--{}", cfg.model.repo.replace('/', "--")))
-        .join("snapshots");
+    let base = model_snapshot_dir(cfg)
+        .parent()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| model_snapshot_dir(cfg));
     let mut weights = None;
     let mut mmproj = None;
     if let Ok(snapshots) = std::fs::read_dir(base) {
@@ -61,6 +63,19 @@ pub fn model_paths(cfg: &Config) -> ModelPaths {
         }
     }
     ModelPaths { weights, mmproj }
+}
+
+pub fn ensure_model(cfg: &Config) -> Result<ModelPaths, Box<dyn std::error::Error>> {
+    let paths = model_paths(cfg);
+    if paths.weights.is_some() && paths.mmproj.is_some() {
+        return Ok(paths);
+    }
+
+    let root = model_snapshot_dir(cfg);
+    fs::create_dir_all(&root)?;
+    download_model_file(cfg, &cfg.model.weights, &root.join(&cfg.model.weights))?;
+    download_model_file(cfg, &cfg.model.mmproj, &root.join(&cfg.model.mmproj))?;
+    Ok(model_paths(cfg))
 }
 
 pub fn ensure_engine() -> Result<(), Box<dyn std::error::Error>> {
@@ -127,4 +142,39 @@ fn healthy(port: u16) -> bool {
         .and_then(|client| client.get(format!("http://127.0.0.1:{port}/health")).send())
         .map(|response| response.status().is_success())
         .unwrap_or(false)
+}
+
+fn model_snapshot_dir(cfg: &Config) -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".cache/huggingface/hub")
+        .join(format!("models--{}", cfg.model.repo.replace('/', "--")))
+        .join("snapshots")
+        .join("yappr")
+}
+
+fn download_model_file(
+    cfg: &Config,
+    filename: &str,
+    dest: &PathBuf,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if dest.exists() {
+        return Ok(());
+    }
+    let url = format!(
+        "https://huggingface.co/{}/resolve/main/{filename}",
+        cfg.model.repo
+    );
+    log_line(format!("downloading model file: {url}"));
+    let mut response = Client::builder()
+        .timeout(Duration::from_secs(1800))
+        .build()?
+        .get(url)
+        .send()?
+        .error_for_status()?;
+    let tmp = dest.with_extension("part");
+    let mut file = fs::File::create(&tmp)?;
+    io::copy(&mut response, &mut file)?;
+    fs::rename(tmp, dest)?;
+    Ok(())
 }
