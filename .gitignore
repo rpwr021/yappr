@@ -1,10 +1,7 @@
-# Python
-.venv/
-__pycache__/
-*.pyc
+# Rust build outputs
+/target/
 
-# py2app build outputs
-/build/
+# App build outputs
 /dist/
 /Yappr.app/
 
@@ -12,5 +9,7 @@ __pycache__/
 .DS_Store
 
 # runtime
-/tmp/yappr*.log
 .yappr.lock
+
+# local-only notes / handoff
+/.local/

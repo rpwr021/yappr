@@ -29,6 +29,6 @@ cp -R dist/Yappr.app "$DEST"
 
 open "$DEST"
 echo "Yappr installed to $DEST and launched."
-echo "Logs: tail -f /tmp/yappr*.log   (menu shows Starting… then Ready)"
+echo "Logs: tail -f ~/.yappr/yappr.log /tmp/yappr-llama-server.log"
 echo "First time only: grant Yappr in System Settings > Privacy & Security >"
 echo "  Input Monitoring + Accessibility. The grant sticks (stable signing)."

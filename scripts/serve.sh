@@ -14,7 +14,7 @@ fi
 # Resolve the engine binary (installed by engine_install.sh, or on PATH).
 BIN="$HOME/.yappr/bin/llama-server"
 [ -x "$BIN" ] || BIN="$(command -v llama-server || true)"
-[ -n "$BIN" ] || { echo "llama-server not found; run src/yappr/engine_install.sh first"; exit 1; }
+[ -n "$BIN" ] || { echo "llama-server not found; run engine/install.sh first"; exit 1; }
 
 # Resolve the model from the HF cache.
 SNAP="$(find "$HOME/.cache/huggingface/hub/models--google--gemma-4-E4B-it-qat-q4_0-gguf/snapshots" \

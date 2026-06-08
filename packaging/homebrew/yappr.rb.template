@@ -1,0 +1,15 @@
+cask "yappr" do
+  version "__VERSION__"
+  sha256 "__SHA256__"
+
+  url "https://github.com/rpwr021/yappr/releases/download/v#{version}/Yappr-macos.zip"
+  name "Yappr"
+  desc "Local push-to-talk dictation and voice chat for macOS"
+  homepage "https://github.com/rpwr021/yappr"
+
+  app "Yappr.app"
+
+  zap trash: [
+    "~/.yappr",
+  ]
+end
