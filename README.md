@@ -12,6 +12,21 @@ curl -fsSL https://raw.githubusercontent.com/rpwr021/yappr/main/install.sh | bas
 
 This installs `/Applications/Yappr.app` and launches it.
 
+## Launch
+
+Start Yappr from Finder, Spotlight, or Terminal:
+
+```bash
+open /Applications/Yappr.app
+```
+
+After editing `~/.yappr/config.ini`, quit Yappr from the menu-bar icon and
+launch it again. To inspect the effective config without launching the UI:
+
+```bash
+/Applications/Yappr.app/Contents/MacOS/Yappr --check
+```
+
 ## Use
 
 - Hold `Right Option` to dictate.
