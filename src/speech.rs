@@ -15,11 +15,24 @@ static SUPERTONIC: OnceLock<Mutex<SupertonicEngine>> = OnceLock::new();
 
 pub fn speak(text: &str, cfg: &SpeechConfig) -> Result<(), Box<dyn std::error::Error>> {
     STOP_REQUESTED.store(false, Ordering::SeqCst);
-    match cfg.backend.as_str() {
-        "say" => say(text, cfg.voice.as_deref(), cfg.rate),
+    let result = match cfg.backend.as_str() {
+        "say" => return say(text, cfg.voice.as_deref(), cfg.rate),
         "kokoro" => speak_kokoro(text, &cfg.kokoro),
         "supertonic" => speak_supertonic(text, &cfg.supertonic),
         other => Err(format!("unknown speech backend: {other}").into()),
+    };
+    // Fall back to the always-available macOS `say` if a model backend fails
+    // (e.g. its model files were never downloaded), so the user still hears the
+    // answer instead of silence.
+    match result {
+        Ok(()) => Ok(()),
+        Err(err) => {
+            crate::logger::log_line(format!(
+                "speech backend '{}' failed ({err}); falling back to say",
+                cfg.backend
+            ));
+            say(text, cfg.voice.as_deref(), cfg.rate)
+        }
     }
 }
 

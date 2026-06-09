@@ -474,6 +474,14 @@ mod tests {
     }
 
     #[test]
+    fn default_speech_backend_is_say() {
+        // Shipped default must be the always-available macOS backend so a fresh
+        // install speaks without any model download. See speech::speak fallback.
+        let cfg = config_from("");
+        assert_eq!(cfg.speech.backend, "say");
+    }
+
+    #[test]
     fn migrates_old_e4b_default_to_e2b() {
         let mut ini = Ini::default();
         ini.merge(

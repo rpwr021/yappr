@@ -70,43 +70,40 @@ impl ChatClient {
         let mut messages = vec![json!({"role": "system", "content": chat_system_prompt()})];
         self.append_recent_history(&mut messages);
         messages.push(json!({"role": "user", "content": question}));
-        let first = self.chat_call(&messages, self.cfg.search.enabled)?;
+        let first = self.chat_call(&messages, search::available(&self.cfg.search))?;
         let choice = first
             .choices
             .first()
             .ok_or("chat response had no choices")?;
-        if choice.finish_reason.as_deref() == Some("tool_calls") {
-            if let Some(tool_call) = choice
-                .message
-                .tool_calls
-                .as_ref()
-                .and_then(|calls| calls.first())
-            {
-                let query = tool_call.query().unwrap_or_else(|| question.to_string());
-                crate::logger::debug_line(format!("web_search: {query}"));
-                let results = search::web_search(&self.cfg.search, &query);
-                messages.push(json!({
-                    "role": "assistant",
-                    "content": Value::Null,
-                    "tool_calls": [tool_call.assistant_json()]
-                }));
-                messages.push(json!({
-                    "role": "tool",
-                    "tool_call_id": tool_call.id,
-                    "name": "web_search",
-                    "content": results
-                }));
-                let second = self.chat_call(&messages, false)?;
-                let answer = clean_spoken_text(
-                    second
-                        .choices
-                        .first()
-                        .and_then(|c| c.message.content.as_deref())
-                        .unwrap_or(""),
-                );
-                self.remember(question, &answer);
-                return Ok(answer);
-            }
+        // Trigger the hand-off whenever the model emitted a tool call. Local
+        // llama-server templates often set finish_reason to "stop" rather than
+        // "tool_calls" even when tool_calls is populated, so keying only on
+        // finish_reason would silently skip the search.
+        if let Some(tool_call) = choice.requested_tool_call() {
+            let query = tool_call.query().unwrap_or_else(|| question.to_string());
+            crate::logger::debug_line(format!("web_search: {query}"));
+            let results = search::web_search(&self.cfg.search, &query);
+            messages.push(json!({
+                "role": "assistant",
+                "content": Value::Null,
+                "tool_calls": [tool_call.assistant_json()]
+            }));
+            messages.push(json!({
+                "role": "tool",
+                "tool_call_id": tool_call.id,
+                "name": "web_search",
+                "content": results
+            }));
+            let second = self.chat_call(&messages, false)?;
+            let answer = clean_spoken_text(
+                second
+                    .choices
+                    .first()
+                    .and_then(|c| c.message.content.as_deref())
+                    .unwrap_or(""),
+            );
+            self.remember(question, &answer);
+            return Ok(answer);
         }
         let answer = clean_spoken_text(choice.message.content.as_deref().unwrap_or(""));
         self.remember(question, &answer);
@@ -250,6 +247,20 @@ struct Choice {
     finish_reason: Option<String>,
 }
 
+impl Choice {
+    /// The tool call the model wants run, if any. Keys on the presence of a
+    /// tool_calls entry rather than finish_reason, since local chat templates
+    /// are inconsistent about finish_reason. Only honors calls for web_search
+    /// (or with no name set, which some templates emit).
+    fn requested_tool_call(&self) -> Option<&ToolCall> {
+        let call = self.message.tool_calls.as_ref()?.first()?;
+        match call.function.name.as_deref() {
+            None | Some("web_search") => Some(call),
+            Some(_) => None,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 struct Message {
     content: Option<String>,
@@ -296,7 +307,7 @@ impl ToolCall {
 
 #[cfg(test)]
 mod tests {
-    use super::{clean_spoken_text, parse_translation_target, ToolCall, ToolFunction};
+    use super::{clean_spoken_text, parse_translation_target, Choice, ToolCall, ToolFunction};
 
     #[test]
     fn parses_translation_after_target_marker() {
@@ -332,5 +343,58 @@ mod tests {
             call.query().as_deref(),
             Some("weather June 8 2026 San Francisco")
         );
+    }
+
+    #[test]
+    fn tool_query_is_none_for_malformed_arguments() {
+        let call = ToolCall {
+            id: "1".to_string(),
+            kind: None,
+            function: ToolFunction {
+                name: Some("web_search".to_string()),
+                arguments: "not json".to_string(),
+            },
+        };
+        assert_eq!(call.query(), None);
+    }
+
+    fn choice_from(json: &str) -> Choice {
+        serde_json::from_str(json).expect("valid choice json")
+    }
+
+    #[test]
+    fn hands_off_when_finish_reason_is_tool_calls() {
+        let choice = choice_from(
+            r#"{"finish_reason":"tool_calls","message":{"content":null,
+                "tool_calls":[{"id":"a","type":"function",
+                "function":{"name":"web_search","arguments":"{\"query\":\"x\"}"}}]}}"#,
+        );
+        assert!(choice.requested_tool_call().is_some());
+    }
+
+    #[test]
+    fn hands_off_when_tool_calls_present_but_finish_reason_is_stop() {
+        // Local llama-server templates often report "stop" even with a tool call.
+        let choice = choice_from(
+            r#"{"finish_reason":"stop","message":{"content":null,
+                "tool_calls":[{"id":"a","function":{"name":"web_search","arguments":"{}"}}]}}"#,
+        );
+        assert!(choice.requested_tool_call().is_some());
+    }
+
+    #[test]
+    fn no_hand_off_when_no_tool_calls() {
+        let choice =
+            choice_from(r#"{"finish_reason":"stop","message":{"content":"just an answer"}}"#);
+        assert!(choice.requested_tool_call().is_none());
+    }
+
+    #[test]
+    fn ignores_tool_call_for_unknown_function() {
+        let choice = choice_from(
+            r#"{"finish_reason":"tool_calls","message":{"content":null,
+                "tool_calls":[{"id":"a","function":{"name":"do_something_else","arguments":"{}"}}]}}"#,
+        );
+        assert!(choice.requested_tool_call().is_none());
     }
 }

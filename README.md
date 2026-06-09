@@ -95,14 +95,17 @@ supertonic_threads = 2
 ```
 
 The model directory must contain the Supertonic int8 ONNX files, `tts.json`,
-`unicode_indexer.bin`, and `voice.bin`. Use `backend = say` if you want macOS
-speech without a model download.
+`unicode_indexer.bin`, and `voice.bin`. The default backend is `say` (macOS
+built-in speech, no download). If you select `supertonic` or `kokoro` but its
+model files are missing, Yappr logs the failure and falls back to `say`.
 
-When search is enabled, Yappr exposes a `web_search` tool to the local model.
-For time-sensitive questions, the model can call the tool, Yappr queries the
-configured SearXNG endpoint, then the results are sent back as context for the
-final spoken answer. The default search endpoint is
-`http://127.0.0.1:8888/search`.
+When search is enabled, Yappr exposes a `web_search` tool to the local model,
+but only if a search backend is actually reachable. Yappr first tries the
+configured SearXNG endpoint (default `http://127.0.0.1:8888/search`); if that is
+unreachable it falls back to DuckDuckGo. If neither responds, the tool is not
+offered to the model. For time-sensitive questions the model calls the tool,
+Yappr runs the query, and the results are sent back as context for the final
+spoken answer.
 
 Check the effective client config:
 
