@@ -83,15 +83,28 @@ pub fn ensure_engine() -> Result<(), Box<dyn std::error::Error>> {
     if resolve_binary("auto").is_some() {
         return Ok(());
     }
-    let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("engine/install.sh");
-    if !script.exists() {
-        return Err("engine installer not found".into());
-    }
+    let script = engine_installer_path().ok_or("engine installer not found")?;
     let status = Command::new("bash").arg(script).status()?;
     if !status.success() {
         return Err("engine installer failed".into());
     }
     Ok(())
+}
+
+/// Locate the bundled engine installer. Inside Yappr.app the executable lives at
+/// `Contents/MacOS/Yappr`, so the script sits in `Contents/Resources`. Falls back
+/// to the source tree for `cargo run`.
+fn engine_installer_path() -> Option<PathBuf> {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(macos_dir) = exe.parent() {
+            let bundled = macos_dir.join("../Resources/engine-install.sh");
+            if bundled.exists() {
+                return Some(bundled);
+            }
+        }
+    }
+    let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("engine/install.sh");
+    dev.exists().then_some(dev)
 }
 
 pub fn start(

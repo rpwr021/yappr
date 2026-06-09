@@ -77,10 +77,11 @@ pub fn run(args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
 
     if args.is_empty() || args.iter().any(|arg| arg == "--app") {
         let instance_lock = InstanceLock::acquire()?;
-        let server = start_backend(&cfg)?;
         let client = ChatClient::new(cfg.clone())?;
-        let runtime = Runtime::new(cfg, client, server);
+        let runtime = Runtime::new(cfg, client);
         runtime.hold_instance_lock(instance_lock);
+        // Backend (model download, engine install, llama-server) is provisioned
+        // in the background from hotkey::run so the menu bar appears immediately.
         return hotkey::run(runtime);
     }
 

@@ -5,7 +5,7 @@ use crate::inject;
 use crate::instance::InstanceLock;
 use crate::logger::{debug_line, log_line};
 use crate::perms;
-use crate::server::ManagedServer;
+use crate::server::{self, ManagedServer};
 use crate::speech;
 use crate::ui;
 use crate::vad;
@@ -21,11 +21,13 @@ pub struct Runtime {
     recording: AtomicBool,
     epoch: AtomicU64,
     pub status: AtomicU8,
+    ready: AtomicBool,
     pub menu_config: Config,
     audio_device: Mutex<Option<String>>,
     speech: Mutex<SpeechConfig>,
     last_transcript: Mutex<Option<String>>,
     instance_lock: Mutex<Option<InstanceLock>>,
+    managed_server: Mutex<Option<ManagedServer>>,
 }
 
 struct ActiveRecording {
@@ -40,25 +42,81 @@ enum HotkeyCommand {
 }
 
 impl Runtime {
-    pub fn new(cfg: Config, client: ChatClient, server: Option<ManagedServer>) -> Arc<Self> {
+    pub fn new(cfg: Config, client: ChatClient) -> Arc<Self> {
         let (tx, rx) = mpsc::channel();
         let menu_config = cfg.clone();
         let audio_device = Mutex::new(cfg.audio.device.clone());
         let speech = Mutex::new(cfg.speech.clone());
         let client = Arc::new(client);
-        std::thread::spawn(move || audio_worker(cfg, client, server, rx));
+        std::thread::spawn(move || audio_worker(cfg, client, rx));
         Arc::new(Self {
             tx,
             busy: AtomicBool::new(false),
             recording: AtomicBool::new(false),
             epoch: AtomicU64::new(0),
-            status: AtomicU8::new(ui::IDLE),
+            status: AtomicU8::new(ui::STARTING),
+            ready: AtomicBool::new(false),
             menu_config,
             audio_device,
             speech,
             last_transcript: Mutex::new(None),
             instance_lock: Mutex::new(None),
+            managed_server: Mutex::new(None),
         })
+    }
+
+    /// Download the model and engine, then start llama-server, off the main
+    /// thread so the menu bar is responsive during the (potentially multi-GB,
+    /// multi-minute) first-run download. Status transitions drive the tray icon.
+    pub fn provision(self: &Arc<Self>) {
+        let runtime = Arc::clone(self);
+        std::thread::spawn(move || {
+            let cfg = &runtime.menu_config;
+            if !cfg.server.manage {
+                runtime.mark_ready();
+                return;
+            }
+            runtime.status.store(ui::PROVISIONING_MODEL, Ordering::SeqCst);
+            let paths = match server::ensure_model(cfg) {
+                Ok(paths) => paths,
+                Err(err) => return runtime.fail_provision(format!("model download failed: {err}")),
+            };
+            let (Some(weights), Some(mmproj)) = (paths.weights, paths.mmproj) else {
+                return runtime.fail_provision("model files missing after download".into());
+            };
+            runtime.status.store(ui::PROVISIONING_ENGINE, Ordering::SeqCst);
+            if let Err(err) = server::ensure_engine() {
+                return runtime.fail_provision(format!("engine install failed: {err}"));
+            }
+            runtime.status.store(ui::STARTING, Ordering::SeqCst);
+            match server::start(cfg, &weights, &mmproj) {
+                Ok(server) => {
+                    if let Ok(mut slot) = runtime.managed_server.lock() {
+                        *slot = Some(server);
+                    }
+                    runtime.mark_ready();
+                }
+                Err(err) => runtime.fail_provision(format!("llama-server failed to start: {err}")),
+            }
+        });
+    }
+
+    pub fn is_ready(&self) -> bool {
+        self.ready.load(Ordering::SeqCst)
+    }
+
+    fn mark_ready(&self) {
+        self.ready.store(true, Ordering::SeqCst);
+        // Don't clobber a permission notice raised by the hotkey layer.
+        if self.status.load(Ordering::SeqCst) != ui::NOTICE {
+            self.status.store(ui::IDLE, Ordering::SeqCst);
+        }
+        log_line("backend ready");
+    }
+
+    fn fail_provision(&self, message: String) {
+        self.status.store(ui::ERROR, Ordering::SeqCst);
+        log_line(message);
     }
 
     pub fn hold_instance_lock(&self, lock: InstanceLock) {
@@ -68,6 +126,10 @@ impl Runtime {
     }
 
     pub fn hotkey_down(&self, chat: bool) {
+        if !self.ready.load(Ordering::SeqCst) {
+            log_line("ignoring hotkey: backend still starting up");
+            return;
+        }
         if self.recording.load(Ordering::SeqCst) {
             log_line("recording: hotkey press already active");
             return;
@@ -251,12 +313,7 @@ pub fn runtime() -> Option<&'static Arc<Runtime>> {
     RUNTIME.get()
 }
 
-fn audio_worker(
-    cfg: Config,
-    client: Arc<ChatClient>,
-    _server: Option<ManagedServer>,
-    rx: Receiver<HotkeyCommand>,
-) {
+fn audio_worker(cfg: Config, client: Arc<ChatClient>, rx: Receiver<HotkeyCommand>) {
     let mut active: Option<ActiveRecording> = None;
     while let Ok(command) = rx.recv() {
         match command {

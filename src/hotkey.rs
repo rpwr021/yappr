@@ -14,9 +14,11 @@ pub fn run(runtime: Arc<Runtime>) -> Result<(), Box<dyn std::error::Error>> {
     let runtime = runtime::runtime().ok_or("runtime unavailable")?;
     let status_item = Box::leak(Box::new(ui::create_status_item(&runtime.menu_config)?));
     ui::install_animation_timer(status_item);
+    // Download the model/engine and start llama-server off the main thread so the
+    // menu bar stays responsive and shows progress during the first-run download.
+    runtime.provision();
     if enable_hotkeys().is_ok() {
-        runtime.status.store(ui::IDLE, Ordering::SeqCst);
-        log_line("Yappr ready: hold Right Option to dictate; hold Cmd+Right Option to chat");
+        log_line("hotkeys enabled; backend provisioning in background");
     } else {
         runtime.status.store(ui::NOTICE, Ordering::SeqCst);
         log_line(format!("hotkeys disabled: {}", perms::report().log_summary()));
@@ -75,7 +77,11 @@ extern "C" fn retry_hotkeys(_timer: *mut c_void, _info: *mut c_void) {
     }
     if enable_hotkeys().is_ok() {
         if let Some(runtime) = runtime::runtime() {
-            runtime.status.store(ui::IDLE, Ordering::SeqCst);
+            // Only clear to Ready if provisioning has finished; otherwise leave
+            // the provisioning status to keep showing download/start progress.
+            if runtime.is_ready() {
+                runtime.status.store(ui::IDLE, Ordering::SeqCst);
+            }
         }
         log_line(format!(
             "hotkeys enabled after permission retry; {}",

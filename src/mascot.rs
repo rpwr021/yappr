@@ -3,7 +3,8 @@ use std::io::Cursor;
 use tray_icon::Icon;
 
 use crate::ui::{
-    ANSWERING, ERROR, NOTICE, RECORDING_CHAT, RECORDING_DICTATE, SPEAKING, TRANSCRIBING,
+    ANSWERING, ERROR, NOTICE, PROVISIONING_ENGINE, PROVISIONING_MODEL, RECORDING_CHAT,
+    RECORDING_DICTATE, SPEAKING, STARTING, TRANSCRIBING,
 };
 
 const ICON_SIZE: usize = 32;
@@ -29,6 +30,7 @@ pub fn icon_for_state(state: u8, _frame: usize) -> Result<Icon, Box<dyn std::err
         SPEAKING => SPEAKING_ICON,
         ERROR => ERROR_ICON,
         NOTICE => IDLE_ICON,
+        PROVISIONING_MODEL | PROVISIONING_ENGINE | STARTING => TRANSCRIBING_ICON,
         _ => IDLE_ICON,
     };
     let rgba = decode_icon(png)?;

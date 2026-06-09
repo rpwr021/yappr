@@ -6,10 +6,6 @@ cd "$(dirname "$0")/.."
 VERSION="${YAPPR_VERSION:-$(sed -nE 's/^version = "([^"]+)"/\1/p' Cargo.toml | head -1)}"
 BUILD="${YAPPR_BUILD:-$VERSION}"
 TAG="${YAPPR_RELEASE_TAG:-v$VERSION}"
-# Tag the cask pins for download. Must be an immutable, version-specific tag so
-# the checksum stays valid; defaults to v$VERSION, separate from the rolling
-# release line ($TAG) used by install.sh.
-CASK_TAG="${YAPPR_CASK_TAG:-v$VERSION}"
 ARCH="$(uname -m)"
 OUT_DIR="dist/release"
 ZIP="$OUT_DIR/Yappr-macos-$ARCH.zip"
@@ -24,7 +20,6 @@ shasum -a 256 "$ZIP" "$OUT_DIR/Yappr-macos.zip" > "$OUT_DIR/SHA256SUMS"
 SHA="$(shasum -a 256 "$OUT_DIR/Yappr-macos.zip" | awk '{print $1}')"
 sed \
   -e "s/__VERSION__/$VERSION/g" \
-  -e "s/__TAG__/$CASK_TAG/g" \
   -e "s/__SHA256__/$SHA/g" \
   packaging/homebrew/yappr.rb.template > "$OUT_DIR/yappr.rb"
 

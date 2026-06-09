@@ -6,11 +6,25 @@ Local push-to-talk dictation and voice chat for macOS.
 
 ## Install
 
+With Homebrew:
+
+```bash
+brew install rpwr021/yappr/yappr
+```
+
+Or with the install script:
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/rpwr021/yappr/main/install.sh | bash
 ```
 
-This installs `/Applications/Yappr.app` and launches it.
+Either method installs `/Applications/Yappr.app` and launches it. Update a
+Homebrew install with `brew upgrade --cask yappr`.
+
+Homebrew installs the `llama.cpp` engine automatically. On first launch, Yappr
+downloads a multi-GB speech model from Hugging Face; the menu-bar icon shows
+"Downloading model…", "Installing engine…", then "Starting…", so the first run
+can take several minutes before the hotkeys respond.
 
 ## Launch
 

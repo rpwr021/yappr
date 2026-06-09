@@ -10,6 +10,7 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp resources/Info.plist "$APP/Contents/Info.plist"
 cp resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
+cp engine/install.sh "$APP/Contents/Resources/engine-install.sh"
 cp target/release/yappr "$APP/Contents/MacOS/Yappr"
 
 if [ -n "${YAPPR_VERSION:-}" ]; then

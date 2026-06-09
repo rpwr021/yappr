@@ -19,6 +19,9 @@ pub const ANSWERING: u8 = 4;
 pub const SPEAKING: u8 = 5;
 pub const ERROR: u8 = 6;
 pub const NOTICE: u8 = 7;
+pub const PROVISIONING_MODEL: u8 = 8;
+pub const PROVISIONING_ENGINE: u8 = 9;
+pub const STARTING: u8 = 10;
 
 thread_local! {
     static SELECTABLE_MENU_ITEMS: RefCell<Vec<SelectableMenuItem>> = const { RefCell::new(Vec::new()) };
@@ -461,6 +464,9 @@ fn status_text(state: u8) -> &'static str {
         SPEAKING => "Status: Speaking",
         NOTICE => "Status: Needs Input/Access/Mic",
         ERROR => "Status: Error; see log",
+        PROVISIONING_MODEL => "Status: Downloading model…",
+        PROVISIONING_ENGINE => "Status: Installing engine…",
+        STARTING => "Status: Starting…",
         _ => "Status: Ready",
     }
 }
