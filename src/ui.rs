@@ -46,6 +46,9 @@ pub fn create_status_item(cfg: &Config) -> Result<StatusItem, Box<dyn std::error
     clear_selectable_menu_items();
     let menu = Menu::new();
     let status = MenuItem::with_id("status", "Status: Ready", false, None);
+    // Non-clickable reminders of the (fixed) push-to-talk hotkeys.
+    let dictate_hint = MenuItem::with_id("hint_dictate", "Dictate: hold Right Option", false, None);
+    let chat_hint = MenuItem::with_id("hint_chat", "Chat: hold ⌘ + Right Option", false, None);
     let microphone = microphone_menu(cfg)?;
     let model = model_menu(cfg)?;
     let language = language_menu(cfg)?;
@@ -56,6 +59,9 @@ pub fn create_status_item(cfg: &Config) -> Result<StatusItem, Box<dyn std::error
     let separator = PredefinedMenuItem::separator();
     menu.append_items(&[
         &status,
+        &dictate_hint,
+        &chat_hint,
+        &PredefinedMenuItem::separator(),
         &microphone,
         &model,
         &language,

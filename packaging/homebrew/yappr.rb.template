@@ -20,6 +20,10 @@ cask "yappr" do
   zap trash: "~/.yappr"
 
   caveats <<~EOS
+    Push-to-talk hotkeys:
+      Dictate:  hold Right Option
+      Chat:     hold Cmd + Right Option
+
     On first launch, Yappr downloads a multi-GB speech model from Hugging Face.
     Watch the menu-bar icon for progress; the first run can take several minutes.
   EOS
