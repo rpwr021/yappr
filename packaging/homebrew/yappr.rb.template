@@ -17,6 +17,13 @@ cask "yappr" do
 
   app "Yappr.app"
 
+  # The app is ad-hoc signed (not notarized), so strip the download quarantine
+  # to skip the Gatekeeper "unverified developer" wall on first launch.
+  postflight do
+    system_command "/usr/bin/xattr",
+                   args: ["-dr", "com.apple.quarantine", "#{appdir}/Yappr.app"]
+  end
+
   zap trash: "~/.yappr"
 
   caveats <<~EOS
