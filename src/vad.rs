@@ -1,8 +1,6 @@
 use crate::config::VadConfig;
 use crate::expand_tilde;
-use sherpa_onnx::{
-    SileroVadModelConfig, VadModelConfig, VoiceActivityDetector,
-};
+use sherpa_onnx::{SileroVadModelConfig, VadModelConfig, VoiceActivityDetector};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
@@ -54,7 +52,9 @@ pub fn detect(
     })
 }
 
-fn detector(cfg: &VadConfig) -> Result<&'static Mutex<VoiceActivityDetector>, Box<dyn std::error::Error>> {
+fn detector(
+    cfg: &VadConfig,
+) -> Result<&'static Mutex<VoiceActivityDetector>, Box<dyn std::error::Error>> {
     if DETECTOR.get().is_none() {
         let config = VadModelConfig {
             silero_vad: SileroVadModelConfig {
@@ -75,7 +75,9 @@ fn detector(cfg: &VadConfig) -> Result<&'static Mutex<VoiceActivityDetector>, Bo
             VoiceActivityDetector::create(&config, 30.0).ok_or("failed to create VAD detector")?;
         let _ = DETECTOR.set(Mutex::new(detector));
     }
-    DETECTOR.get().ok_or_else(|| "vad detector not initialized".into())
+    DETECTOR
+        .get()
+        .ok_or_else(|| "vad detector not initialized".into())
 }
 
 fn model_path() -> Result<PathBuf, Box<dyn std::error::Error>> {

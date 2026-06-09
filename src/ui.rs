@@ -118,7 +118,9 @@ extern "C" fn animation_tick(_timer: *mut c_void, info: *mut c_void) {
     let item = unsafe { &mut *(info as *mut StatusItem) };
     item.frame = item.frame.wrapping_add(1);
     let state = runtime.status.load(Ordering::SeqCst);
-    let should_draw = state != IDLE || state != item.last_state;
+    // Redraw on a state change, or every tick for states that pulse, so the
+    // animation advances. Static states only redraw when the state changes.
+    let should_draw = state != item.last_state || crate::mascot::is_animated(state);
     if should_draw {
         if let Ok(icon) = icon_for_state(state, item.frame) {
             let _ = item.tray.set_icon(Some(icon));
@@ -224,7 +226,12 @@ fn speech_menu(cfg: &Config) -> Result<Submenu, Box<dyn std::error::Error>> {
         true,
         None,
     );
-    remember_selectable("speech_voice", "speech_voice:", "System Default", &system_voice);
+    remember_selectable(
+        "speech_voice",
+        "speech_voice:",
+        "System Default",
+        &system_voice,
+    );
     say_voice.append(&system_voice)?;
     for voice in say_voices(cfg.speech.voice.as_deref()) {
         let item_id = format!("speech_voice:{voice}");
@@ -502,10 +509,10 @@ mod tests {
     use super::{
         is_preferred_say_voice, kokoro_voices, log_label, say_voice_label, say_voice_name,
     };
-use crate::config::{
-    AudioConfig, ChatConfig, Config, KokoroConfig, LanguageConfig, LoggingConfig, ModelConfig,
-    SearchConfig, ServerConfig, SpeechConfig, SupertonicConfig, VadConfig,
-};
+    use crate::config::{
+        AudioConfig, ChatConfig, Config, KokoroConfig, LanguageConfig, LoggingConfig, ModelConfig,
+        SearchConfig, ServerConfig, SpeechConfig, SupertonicConfig, VadConfig,
+    };
 
     #[test]
     fn parses_say_voice_names_with_spaces() {
@@ -529,7 +536,10 @@ use crate::config::{
 
     #[test]
     fn formats_macos_voice_labels_for_menu() {
-        assert_eq!(say_voice_label("Sandy (English (US))"), "Sandy - English US");
+        assert_eq!(
+            say_voice_label("Sandy (English (US))"),
+            "Sandy - English US"
+        );
         assert_eq!(say_voice_label("Ava (Premium)"), "Ava - Premium");
     }
 

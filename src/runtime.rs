@@ -76,7 +76,9 @@ impl Runtime {
                 runtime.mark_ready();
                 return;
             }
-            runtime.status.store(ui::PROVISIONING_MODEL, Ordering::SeqCst);
+            runtime
+                .status
+                .store(ui::PROVISIONING_MODEL, Ordering::SeqCst);
             let paths = match server::ensure_model(cfg) {
                 Ok(paths) => paths,
                 Err(err) => return runtime.fail_provision(format!("model download failed: {err}")),
@@ -84,7 +86,9 @@ impl Runtime {
             let (Some(weights), Some(mmproj)) = (paths.weights, paths.mmproj) else {
                 return runtime.fail_provision("model files missing after download".into());
             };
-            runtime.status.store(ui::PROVISIONING_ENGINE, Ordering::SeqCst);
+            runtime
+                .status
+                .store(ui::PROVISIONING_ENGINE, Ordering::SeqCst);
             if let Err(err) = server::ensure_engine() {
                 return runtime.fail_provision(format!("engine install failed: {err}"));
             }
@@ -421,7 +425,10 @@ fn process_recording(
 ) {
     if captured.peak < 0.001 {
         set_status(ui::ERROR);
-        log_line(format!("no audio captured; {}", perms::report().log_summary()));
+        log_line(format!(
+            "no audio captured; {}",
+            perms::report().log_summary()
+        ));
         return;
     }
     if cfg.vad.enabled {

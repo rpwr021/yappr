@@ -21,7 +21,10 @@ pub fn run(runtime: Arc<Runtime>) -> Result<(), Box<dyn std::error::Error>> {
         log_line("hotkeys enabled; backend provisioning in background");
     } else {
         runtime.status.store(ui::NOTICE, Ordering::SeqCst);
-        log_line(format!("hotkeys disabled: {}", perms::report().log_summary()));
+        log_line(format!(
+            "hotkeys disabled: {}",
+            perms::report().log_summary()
+        ));
         install_hotkey_retry_timer();
     }
     run_appkit();

@@ -13,3 +13,6 @@
 
 # local-only notes / handoff
 /.local/
+
+# Design reference mockup (not used at runtime)
+resources/assets/logos/logo_panel.png
