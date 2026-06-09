@@ -63,49 +63,26 @@ Gemma 4 E2B, E4B, and 12B are the intended audio-capable Gemma 4 options.
 
 ## Client Config
 
-Client-side config lives at `~/.yappr/config.ini`. Edit that file to change
-models, ports, llama.cpp params, speech, or web search settings without
-rebuilding Yappr. Restart the app after editing.
+Client-side config lives at `~/.yappr/config.ini`. Edit it to change models,
+ports, llama.cpp params, speech, VAD, language, or web search without rebuilding
+Yappr, then restart the app. Every key falls back to a default, so the file only
+needs your overrides.
 
-- `[models] active`: selected model id from the `[model:<id>]` sections.
-- `[model:<id>] repo`, `weights`, `mmproj`: Hugging Face GGUF repo and files.
-- `[model:<id>] ctx_size`, `ngl`: llama.cpp context size and GPU layers.
-- `[server] endpoint`, `port`, `manage`, `binary`, `timeout`: llama-server host/port, whether Yappr starts it, and which binary to use.
-- `[chat] context_seconds`: recent chat history included for follow-up questions.
-- `[vad] enabled`, `threshold`, `min_speech_duration_ms`, `min_silence_duration_ms`, `speech_pad_ms`: client-side Silero VAD gate before ASR. Yappr always uses the ONNX Silero path when VAD is enabled.
-- `[speech] backend`: `supertonic` for local Supertonic 3, `kokoro` for local Kokoro TTS, or `say` for macOS speech.
-- `[speech] voice`, `rate`: macOS `say` voice and speech rate.
-- `[speech] supertonic_model_dir`, `supertonic_sid`, `supertonic_speed`, `supertonic_lang`, `supertonic_steps`, `supertonic_threads`: Supertonic model path and generation settings.
-- `[speech] kokoro_model_dir`, `kokoro_sid`, `kokoro_speed`, `kokoro_lang`, `kokoro_threads`: optional Kokoro model path and generation settings.
-- `[logging] enabled`, `debug`, `path`: app log switch, sensitive-content debug logging, and file path. Keep `debug = false` unless you want transcripts, answers, and tool queries written to logs.
-- `[search] enabled`, `endpoint`, `max_results`, `timeout`: web search tool settings.
+See [docs/configuration.md](docs/configuration.md) for the full parameter
+reference (all sections, keys, and defaults).
 
-For Supertonic speech, download the sherpa-onnx Supertonic package and point Yappr at
-the extracted directory:
+Highlights:
 
-```ini
-[speech]
-backend = supertonic
-supertonic_model_dir = ~/.yappr/models/sherpa-onnx-supertonic-3-tts-int8-2026-05-11
-supertonic_sid = 0
-supertonic_speed = 1.0
-supertonic_lang = en
-supertonic_steps = 8
-supertonic_threads = 2
-```
-
-The model directory must contain the Supertonic int8 ONNX files, `tts.json`,
-`unicode_indexer.bin`, and `voice.bin`. The default backend is `say` (macOS
-built-in speech, no download). If you select `supertonic` or `kokoro` but its
-model files are missing, Yappr logs the failure and falls back to `say`.
-
-When search is enabled, Yappr exposes a `web_search` tool to the local model,
-but only if a search backend is actually reachable. Yappr first tries the
-configured SearXNG endpoint (default `http://127.0.0.1:8888/search`); if that is
-unreachable it falls back to DuckDuckGo. If neither responds, the tool is not
-offered to the model. For time-sensitive questions the model calls the tool,
-Yappr runs the query, and the results are sent back as context for the final
-spoken answer.
+- `[models] active` + `[model:<id>]`: which GGUF audio model to load and its
+  Hugging Face repo/files, `ctx_size`, and `ngl`.
+- `[server]`: `llama-server` endpoint/port, whether Yappr manages it, and which
+  binary to use.
+- `[speech] backend`: `say` (macOS built-in, default), `supertonic`, or
+  `kokoro`. A model backend that fails to load falls back to `say`.
+- `[search]`: the `web_search` tool. Yappr probes the SearXNG `endpoint`, falls
+  back to DuckDuckGo, and only offers the tool if a backend is reachable.
+- `[logging] debug`: keep `false` unless you want transcripts, answers, and tool
+  queries written to the log.
 
 Check the effective client config:
 
