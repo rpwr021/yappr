@@ -55,6 +55,12 @@ pub fn create_status_item(cfg: &Config) -> Result<StatusItem, Box<dyn std::error
     let speech = speech_menu(cfg)?;
     let copy = MenuItem::with_id("copy_transcript", "Copy Last Transcript", true, None);
     let logs = MenuItem::with_id("logs", log_label(cfg), false, None);
+    let version = MenuItem::with_id(
+        "version",
+        format!("Yappr {}", crate::version()),
+        false,
+        None,
+    );
     let quit = MenuItem::with_id("quit", "Quit", true, None);
     let separator = PredefinedMenuItem::separator();
     menu.append_items(&[
@@ -69,6 +75,7 @@ pub fn create_status_item(cfg: &Config) -> Result<StatusItem, Box<dyn std::error
         &copy,
         &logs,
         &separator,
+        &version,
         &quit,
     ])?;
 
