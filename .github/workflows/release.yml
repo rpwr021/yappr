@@ -78,3 +78,15 @@ jobs:
           else
             gh release create "$TAG" dist/release/Yappr-macos-*.zip dist/release/Yappr-macos.zip dist/release/SHA256SUMS dist/release/yappr.rb --title "$TITLE" --notes "$NOTES" --latest
           fi
+      - name: Sync cask to Homebrew tap
+        env:
+          GH_TOKEN: ${{ secrets.TAP_TOKEN }}
+          VERSION: ${{ steps.release_tag.outputs.version }}
+        run: |
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/rpwr021/homebrew-yappr.git" tap
+          cp dist/release/yappr.rb tap/Casks/yappr.rb
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "yappr ${VERSION}" || exit 0
+          git push
