@@ -47,6 +47,11 @@ launch it again. To inspect the effective config without launching the UI:
 - Hold `Cmd + Right Option` to chat.
 - Use the menu-bar icon to change microphone, model, language, speech output, or quit.
 
+Chat is intentionally minimal quick Q&A: one audio-capable model both
+transcribes and answers, so each press gets one short, spoken reply with only a
+brief rolling history. See [docs/configuration.md](docs/configuration.md#chat-behavior)
+for details.
+
 Grant Yappr in System Settings > Privacy & Security:
 
 - Input Monitoring: read the global push-to-talk hotkey.

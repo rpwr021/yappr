@@ -12,6 +12,36 @@ Inspect the effective config without launching the UI:
 Any key you omit falls back to the default shown below, so the file only needs
 the values you want to override.
 
+## Chat behavior
+
+Yappr is built around a single audio-capable model (`llama-server` serving a
+GGUF with native audio input), so the same model both transcribes speech and
+answers questions. This shapes the chat into **minimal, quick Q&A** rather than
+a long-form assistant:
+
+- **Two modes, both push-to-talk.** Hold `Right Option` to *dictate* (audio is
+  transcribed and pasted into the active app). Hold `Cmd + Right Option` to
+  *chat* (audio is transcribed, answered, and spoken back).
+- **One question per turn.** Each press sends one audio clip to the model. There
+  is no streaming conversation; you ask, you get one spoken answer.
+- **Answers are short and spoken.** The model is prompted to answer "concisely
+  in plain spoken prose" with no markdown, headings, bullets, or emoji, since
+  the reply is read aloud by the TTS backend.
+- **Deterministic, no reasoning.** Requests use `temperature = 0`,
+  `max_tokens = 512`, and disable model "thinking"
+  (`reasoning_effort = none`), keeping responses fast and to the point rather
+  than exploratory.
+- **Short follow-up memory.** Recent turns are included as context for
+  follow-ups, bounded by `[chat] context_seconds` (default 60s) and capped at
+  the last 4 question/answer turns. Older history is dropped, so chat stays a
+  sequence of quick exchanges, not a growing thread.
+- **Search for current facts.** For time-sensitive or local questions the model
+  can call the `web_search` tool (see `[search]`); results are fed back and
+  summarized into the spoken answer.
+
+Tune the conversational window with `[chat] context_seconds` and the answer
+voice/speed with `[speech]`; both are documented below.
+
 ## `[models]`
 
 Selects which `[model:<id>]` section is active.
