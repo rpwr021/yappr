@@ -21,6 +21,10 @@ curl -fsSL https://raw.githubusercontent.com/rpwr021/yappr/main/install.sh | bas
 Either method installs `/Applications/Yappr.app` and launches it. Update a
 Homebrew install with `brew upgrade --cask yappr`.
 
+The prebuilt release is Apple Silicon (arm64) only. On Intel Macs the install
+script builds from source instead, which needs the Rust toolchain and git; it
+prints how to install them if they are missing.
+
 Homebrew installs the `llama.cpp` engine automatically. On first launch, Yappr
 downloads a multi-GB speech model from Hugging Face; the menu-bar icon shows
 "Downloading model…", "Installing engine…", then "Starting…", so the first run

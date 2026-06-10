@@ -11,6 +11,30 @@ die() { printf "\033[1;31m[yappr] %s\033[0m\n" "$*" >&2; exit 1; }
 
 [ "$(uname -s)" = "Darwin" ] || die "Yappr is macOS only."
 
+ARCH="$(uname -m)"
+NO_PREBUILT=
+case "$ARCH" in
+  arm64) ;;          # Apple Silicon: prebuilt release is native.
+  x86_64)
+    # The prebuilt release is arm64-only, so Intel Macs must build from source,
+    # which needs the Rust toolchain and git.
+    say "Intel Mac detected; the prebuilt release is Apple Silicon only."
+    say "Yappr will build from source instead (requires Rust and git)."
+    NO_PREBUILT=1
+    ;;
+  *)
+    die "unsupported architecture '$ARCH'. Yappr supports Apple Silicon (arm64) and Intel (x86_64) Macs."
+    ;;
+esac
+
+# Report a missing build dependency with install instructions, then exit.
+require_dep() {
+  command -v "$1" >/dev/null && return 0
+  printf "\033[1;31m[yappr] %s is required but not installed.\033[0m\n" "$2" >&2
+  printf "\033[1;31m[yappr] install it with: %s\033[0m\n" "$3" >&2
+  exit 1
+}
+
 install_zip() {
   command -v curl >/dev/null || return 1
   command -v ditto >/dev/null || return 1
@@ -28,8 +52,8 @@ install_zip() {
 }
 
 install_source() {
-  command -v git >/dev/null || die "git is required for source install."
-  command -v cargo >/dev/null || die "Rust/Cargo is required for source install."
+  require_dep git "git" "xcode-select --install"
+  require_dep cargo "Rust/Cargo" "curl https://sh.rustup.rs -sSf | sh   (or: brew install rust)"
 
   if [ -d "$DEST/.git" ]; then
     say "updating $DEST"
@@ -47,10 +71,10 @@ install_source() {
   ./scripts/run.sh
 }
 
-if install_zip; then
+if [ -z "$NO_PREBUILT" ] && install_zip; then
   say "installed release build"
 else
-  say "release install unavailable; falling back to source build"
+  [ -n "$NO_PREBUILT" ] || say "release install unavailable; falling back to source build"
   install_source
 fi
 
