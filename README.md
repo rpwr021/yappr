@@ -51,6 +51,15 @@ launch it again. To inspect the effective config without launching the UI:
 - Hold `Cmd + Right Option` to chat.
 - Use the menu-bar icon to change microphone, model, language, speech output, or quit.
 
+The menu-bar icon is a duck that reflects state (idle, listening, transcribing,
+downloading). macOS decides menu-bar ordering and hides overflow items when the
+bar is full (notably on notched MacBooks) — if you don't see the icon,
+⌘-drag to reorder it, or use a manager like Ice/Bartender to keep it visible.
+
+On first launch Yappr downloads the model (several GB); the icon shows
+"Downloading model… N%". If you press a hotkey before it's ready, Yappr says
+it's still fetching files. Quitting from the menu stops the local model server.
+
 Chat is intentionally minimal quick Q&A: one audio-capable model both
 transcribes and answers, so each press gets one short, spoken reply with only a
 brief rolling history. See [docs/configuration.md](docs/configuration.md#chat-behavior)

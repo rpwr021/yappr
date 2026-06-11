@@ -143,6 +143,17 @@ extern "C" fn animation_tick(_timer: *mut c_void, info: *mut c_void) {
     item.status.set_text(status_text(state));
 }
 
+/// Status line text, with live download progress appended while fetching the model.
+fn status_text(state: u8) -> String {
+    let base = status_label(state);
+    if state == PROVISIONING_MODEL {
+        if let Some(pct) = crate::server::download_percent() {
+            return format!("{base} {pct}%");
+        }
+    }
+    base.to_string()
+}
+
 fn microphone_menu(cfg: &Config) -> Result<Submenu, Box<dyn std::error::Error>> {
     let menu = Submenu::with_id("microphone", "Microphone", true);
     let default = MenuItem::with_id(
@@ -475,7 +486,7 @@ fn say_voice_label(voice: &str) -> String {
         .replace(" (English (US))", " - English US")
 }
 
-fn status_text(state: u8) -> &'static str {
+fn status_label(state: u8) -> &'static str {
     match state {
         RECORDING_DICTATE => "Status: Listening for dictation",
         RECORDING_CHAT => "Status: Listening for chat",

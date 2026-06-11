@@ -4,10 +4,24 @@ use crate::logger::log_line;
 use reqwest::blocking::Client;
 use serde::Deserialize;
 use std::fs;
-use std::io;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::{Duration, Instant};
+
+// Model-download progress as a percentage, or 255 when unknown/idle. Read by the
+// menu-bar status text so the user sees the multi-GB download is making headway.
+static DOWNLOAD_PERCENT: AtomicU8 = AtomicU8::new(255);
+
+/// Current model-download progress (0..=100), or None when not downloading or
+/// the total size is unknown.
+pub fn download_percent() -> Option<u8> {
+    match DOWNLOAD_PERCENT.load(Ordering::Relaxed) {
+        255 => None,
+        p => Some(p),
+    }
+}
 
 pub struct ModelPaths {
     pub weights: Option<PathBuf>,
@@ -230,18 +244,63 @@ fn download_model_file(
         "https://huggingface.co/{}/resolve/main/{filename}",
         cfg.model.repo
     );
-    log_line(format!("downloading model file: {url}"));
-    let mut response = Client::builder()
-        .timeout(Duration::from_secs(1800))
-        .build()?
-        .get(url)
-        .send()?
-        .error_for_status()?;
     let tmp = dest.with_extension("part");
-    let mut file = fs::File::create(&tmp)?;
-    io::copy(&mut response, &mut file)?;
-    fs::rename(tmp, dest)?;
+    // Resume a partial download from a previous run instead of restarting the
+    // multi-GB transfer: ask for the bytes after what we already have.
+    let have = fs::metadata(&tmp).map(|m| m.len()).unwrap_or(0);
+    let client = Client::builder()
+        .timeout(Duration::from_secs(1800))
+        .build()?;
+    let mut request = client.get(&url);
+    if have > 0 {
+        request = request.header(reqwest::header::RANGE, format!("bytes={have}-"));
+    }
+    let mut response = request.send()?.error_for_status()?;
+
+    // 206 => server honored the range and is sending the remainder (append).
+    // Anything else (e.g. 200) means a full body, so start the file over.
+    let resuming = response.status() == reqwest::StatusCode::PARTIAL_CONTENT;
+    let already = if resuming { have } else { 0 };
+    let total = response
+        .content_length()
+        .map(|len| len + already)
+        .filter(|&t| t > 0);
+    log_line(format!(
+        "downloading model file: {url} ({}from byte {already})",
+        if resuming { "resuming " } else { "" }
+    ));
+
+    let mut file = if resuming {
+        fs::OpenOptions::new().append(true).open(&tmp)?
+    } else {
+        fs::File::create(&tmp)?
+    };
+
+    let mut downloaded = already;
+    let mut buf = [0u8; 1 << 16];
+    set_download_percent(downloaded, total);
+    loop {
+        let n = response.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        file.write_all(&buf[..n])?;
+        downloaded += n as u64;
+        set_download_percent(downloaded, total);
+    }
+    file.flush()?;
+    drop(file);
+    fs::rename(&tmp, dest)?;
+    DOWNLOAD_PERCENT.store(255, Ordering::Relaxed);
     Ok(())
+}
+
+fn set_download_percent(downloaded: u64, total: Option<u64>) {
+    let pct = match total {
+        Some(t) => ((downloaded.min(t) * 100) / t) as u8,
+        None => 255,
+    };
+    DOWNLOAD_PERCENT.store(pct, Ordering::Relaxed);
 }
 
 #[cfg(test)]

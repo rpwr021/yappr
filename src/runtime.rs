@@ -28,6 +28,7 @@ pub struct Runtime {
     last_transcript: Mutex<Option<String>>,
     instance_lock: Mutex<Option<InstanceLock>>,
     managed_server: Mutex<Option<ManagedServer>>,
+    last_announce: Mutex<std::time::Instant>,
 }
 
 struct ActiveRecording {
@@ -62,6 +63,10 @@ impl Runtime {
             last_transcript: Mutex::new(None),
             instance_lock: Mutex::new(None),
             managed_server: Mutex::new(None),
+            // Start stale so the first "still fetching" announcement isn't debounced.
+            last_announce: Mutex::new(
+                std::time::Instant::now() - std::time::Duration::from_secs(60),
+            ),
         })
     }
 
@@ -109,6 +114,24 @@ impl Runtime {
         self.ready.load(Ordering::SeqCst)
     }
 
+    /// Speak a short status message, rate-limited so repeated hotkey presses
+    /// during the download don't stack overlapping speech.
+    fn announce(&self, message: &str) {
+        if let Ok(mut last) = self.last_announce.lock() {
+            if last.elapsed() < std::time::Duration::from_secs(6) {
+                return;
+            }
+            *last = std::time::Instant::now();
+        }
+        let speech = self.speech.lock().ok().map(|s| s.clone());
+        let text = message.to_string();
+        std::thread::spawn(move || {
+            if let Some(cfg) = speech {
+                let _ = speech::speak(&text, &cfg);
+            }
+        });
+    }
+
     fn mark_ready(&self) {
         self.ready.store(true, Ordering::SeqCst);
         // Don't clobber a permission notice raised by the hotkey layer.
@@ -123,6 +146,18 @@ impl Runtime {
         log_line(message);
     }
 
+    /// Tear down the managed llama-server before exiting. `process::exit` skips
+    /// destructors, so without this the backend (and its loaded model) would
+    /// survive in memory after quit. Dropping the ManagedServer kills the child.
+    pub fn shutdown(&self) {
+        if let Ok(mut slot) = self.managed_server.lock() {
+            if let Some(server) = slot.take() {
+                drop(server);
+                log_line("managed llama-server stopped");
+            }
+        }
+    }
+
     pub fn hold_instance_lock(&self, lock: InstanceLock) {
         if let Ok(mut slot) = self.instance_lock.lock() {
             *slot = Some(lock);
@@ -131,7 +166,19 @@ impl Runtime {
 
     pub fn hotkey_down(&self, chat: bool) {
         if !self.ready.load(Ordering::SeqCst) {
-            log_line("ignoring hotkey: backend still starting up");
+            // Let the user know it's working, not broken — especially during the
+            // long first-run model download.
+            let downloading = self.status.load(Ordering::SeqCst) == ui::PROVISIONING_MODEL;
+            let msg = if downloading {
+                match server::download_percent() {
+                    Some(p) => format!("I'm still fetching files, {p} percent done."),
+                    None => "I'm still fetching files, one moment.".to_string(),
+                }
+            } else {
+                "I'm still starting up, one moment.".to_string()
+            };
+            log_line(format!("ignoring hotkey: backend not ready ({msg})"));
+            self.announce(&msg);
             return;
         }
         if self.recording.load(Ordering::SeqCst) {
@@ -163,6 +210,7 @@ impl Runtime {
         match id {
             "quit" => {
                 log_line("quit requested from menu");
+                self.shutdown();
                 std::process::exit(0);
             }
             "copy_transcript" => match self.last_transcript.lock().ok().and_then(|v| v.clone()) {
