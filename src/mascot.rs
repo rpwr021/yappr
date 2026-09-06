@@ -5,7 +5,7 @@ use tray_icon::Icon;
 
 use crate::ui::{
     ANSWERING, BACKEND_DOWN, ERROR, NOTICE, PROVISIONING_ENGINE, PROVISIONING_MODEL,
-    RECORDING_CHAT, RECORDING_DICTATE, SPEAKING, STARTING, TRANSCRIBING,
+    RECORDING_CHAT, RECORDING_DICTATE, SETUP_FAILED, SPEAKING, STARTING, TRANSCRIBING,
 };
 
 const ICON_SIZE: usize = 32;
@@ -51,7 +51,7 @@ fn png_for_state_frame(state: u8, frame: usize) -> &'static [u8] {
         ERROR => ERROR_ICON,
         // Reuse the error art: a stopped backend is a failure state, and rendering
         // it as idle would repeat the NOTICE mistake of looking healthy.
-        BACKEND_DOWN => ERROR_ICON,
+        BACKEND_DOWN | SETUP_FAILED => ERROR_ICON,
         NOTICE => IDLE_ICON,
         PROVISIONING_MODEL | PROVISIONING_ENGINE | STARTING => TRANSCRIBING_ICON,
         _ => IDLE_ICON,

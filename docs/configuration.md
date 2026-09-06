@@ -3,11 +3,14 @@
 Yappr reads its settings from `~/.yappr/config.ini` on startup. Edit the file,
 then quit Yappr from the menu-bar icon and launch it again to apply changes.
 
-Inspect the effective config without launching the UI:
+Inspect the effective config, and probe permissions, the configured microphone,
+the log path, and backend health, without launching the UI:
 
 ```bash
 /Applications/Yappr.app/Contents/MacOS/Yappr --check
 ```
+
+Exits non-zero if any probe fails, so it works as a health check.
 
 Any key you omit falls back to the default shown below, so the file only needs
 the values you want to override.

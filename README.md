@@ -105,11 +105,15 @@ Highlights:
 - `[logging] debug`: keep `false` unless you want transcripts, answers, and tool
   queries written to the log.
 
-Check the effective client config:
+Check the effective config, permissions, microphone, and backend health:
 
 ```bash
 /Applications/Yappr.app/Contents/MacOS/Yappr --check
 ```
+
+It ends with a summary and exits non-zero when a check fails, so it can be used
+from a script. A configured microphone that is not currently connected is
+reported as a warning, since recording falls back to the system default.
 
 Logs:
 

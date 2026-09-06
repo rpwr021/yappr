@@ -214,11 +214,13 @@ impl Runtime {
     }
 
     /// Provisioning failures are terminal: there is no working backend to fall
-    /// back to, so this error stays on screen (unlike transient per-request
-    /// errors, which `set_status` clears after ERROR_LINGER).
+    /// back to, so this stays on screen (unlike transient per-request errors,
+    /// which `set_status` clears after ERROR_LINGER). Uses its own status rather
+    /// than ERROR so the tray can say setup failed and a relaunch resumes it,
+    /// instead of the same "see log" as a one-off paste failure.
     fn fail_provision(&self, message: String) {
-        self.store_status(ui::ERROR);
-        log_line(message);
+        self.store_status(ui::SETUP_FAILED);
+        log_line(format!("{message}; reopen Yappr to retry (downloads resume)"));
     }
 
     /// Tear down the managed llama-server before exiting. `process::exit` skips
@@ -251,15 +253,14 @@ impl Runtime {
             // long first-run model download. A stopped backend is the exception:
             // that one is broken, and waiting will not fix it.
             let status = self.status.load(Ordering::SeqCst);
-            let msg = if status == ui::BACKEND_DOWN {
-                "The backend stopped. Quit and reopen Yappr.".to_string()
-            } else if status == ui::PROVISIONING_MODEL {
-                match server::download_percent() {
+            let msg = match status {
+                ui::BACKEND_DOWN => "The backend stopped. Quit and reopen Yappr.".to_string(),
+                ui::SETUP_FAILED => "Setup didn't finish. Reopen Yappr to retry.".to_string(),
+                ui::PROVISIONING_MODEL => match server::download_percent() {
                     Some(p) => format!("I'm still fetching files, {p} percent done."),
                     None => "I'm still fetching files, one moment.".to_string(),
-                }
-            } else {
-                "I'm still starting up, one moment.".to_string()
+                },
+                _ => "I'm still starting up, one moment.".to_string(),
             };
             log_line(format!("ignoring hotkey: backend not ready ({msg})"));
             self.announce(&msg);
@@ -734,6 +735,7 @@ fn should_recover(gen: u64, current_gen: u64, ready: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::should_recover;
+    use crate::ui;
 
     #[test]
     fn recovers_to_idle_after_a_transient_error() {
@@ -757,5 +759,39 @@ mod tests {
         // mark_backend_down clears `ready`, so a request that failed against a
         // dead backend must not self-clear to idle and claim everything is fine.
         assert!(!should_recover(7, 7, false));
+    }
+
+    #[test]
+    fn terminal_states_are_distinct_from_a_transient_error() {
+        // These used to all be ui::ERROR with one "see log" label, so a failed 4GB
+        // download was indistinguishable from a single paste that didn't land.
+        let states = [ui::ERROR, ui::BACKEND_DOWN, ui::SETUP_FAILED];
+        for (i, a) in states.iter().enumerate() {
+            for b in &states[i + 1..] {
+                assert_ne!(a, b, "each failure state needs its own value");
+            }
+        }
+        // Only ERROR self-clears; the other two persist until the user acts, which
+        // is enforced by `set_status` scheduling the clear for ERROR alone.
+        assert_ne!(ui::SETUP_FAILED, ui::ERROR);
+        assert_ne!(ui::BACKEND_DOWN, ui::ERROR);
+    }
+
+    #[test]
+    fn every_failure_state_has_its_own_message() {
+        let labels = [
+            ui::status_label(ui::ERROR),
+            ui::status_label(ui::BACKEND_DOWN),
+            ui::status_label(ui::SETUP_FAILED),
+        ];
+        for (i, a) in labels.iter().enumerate() {
+            for b in &labels[i + 1..] {
+                assert_ne!(a, b, "failure states must not share a label");
+            }
+        }
+        // The two terminal states tell the user what to do; ERROR cannot, since it
+        // covers everything from a failed paste to a VAD hiccup.
+        assert!(ui::status_label(ui::BACKEND_DOWN).contains("reopen"));
+        assert!(ui::status_label(ui::SETUP_FAILED).contains("reopen"));
     }
 }

@@ -25,6 +25,10 @@ pub const STARTING: u8 = 10;
 /// The backend was up and then stopped answering. Distinct from ERROR because it
 /// is not tied to one request: nothing will work until Yappr is relaunched.
 pub const BACKEND_DOWN: u8 = 11;
+/// First-run setup never finished (download, engine install, or server start).
+/// Distinct from ERROR so "the 4 GB download failed" doesn't look like "one paste
+/// didn't land"; partial downloads resume, so relaunching is worth saying.
+pub const SETUP_FAILED: u8 = 12;
 
 /// Radio-style menu groups. Named constants rather than bare strings because the
 /// group has to match between the builder here and the click handler in `runtime`;
@@ -526,7 +530,7 @@ fn say_voice_label(voice: &str) -> String {
         .replace(" (English (US))", " - English US")
 }
 
-fn status_label(state: u8) -> &'static str {
+pub(crate) fn status_label(state: u8) -> &'static str {
     match state {
         RECORDING_DICTATE => "Status: Listening for dictation",
         RECORDING_CHAT => "Status: Listening for chat",
@@ -536,6 +540,7 @@ fn status_label(state: u8) -> &'static str {
         NOTICE => "Status: Needs Input/Access/Mic",
         ERROR => "Status: Error; see log",
         BACKEND_DOWN => "Status: Backend stopped; quit and reopen Yappr",
+        SETUP_FAILED => "Status: Setup failed; reopen Yappr to resume",
         PROVISIONING_MODEL => "Status: Downloading model…",
         PROVISIONING_ENGINE => "Status: Installing engine…",
         STARTING => "Status: Starting…",

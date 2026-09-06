@@ -227,7 +227,7 @@ pub fn healthy(port: u16) -> bool {
         .unwrap_or(false)
 }
 
-fn serves_model(port: u16, weights: &Path) -> bool {
+pub fn serves_model(port: u16, weights: &Path) -> bool {
     let url = format!("http://127.0.0.1:{port}/props");
     let props = Client::builder()
         .timeout(Duration::from_secs(2))
