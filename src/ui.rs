@@ -7,7 +7,7 @@ use std::ffi::c_void;
 use std::process::Command;
 use std::sync::atomic::Ordering;
 use tray_icon::{
-    menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu},
+    menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu},
     TrayIcon, TrayIconBuilder,
 };
 
@@ -26,6 +26,18 @@ pub const STARTING: u8 = 10;
 /// is not tied to one request: nothing will work until Yappr is relaunched.
 pub const BACKEND_DOWN: u8 = 11;
 
+/// Radio-style menu groups. Named constants rather than bare strings because the
+/// group has to match between the builder here and the click handler in `runtime`;
+/// a typo in either used to mean the checkmark silently stopped moving.
+pub mod group {
+    pub const MIC: &str = "mic";
+    pub const MODEL: &str = "model";
+    pub const LANGUAGE: &str = "lang";
+    pub const SPEECH_BACKEND: &str = "speech_backend";
+    pub const SAY_VOICE: &str = "speech_voice";
+    pub const KOKORO_SID: &str = "kokoro_sid";
+}
+
 thread_local! {
     static SELECTABLE_MENU_ITEMS: RefCell<Vec<SelectableMenuItem>> = const { RefCell::new(Vec::new()) };
 }
@@ -34,8 +46,7 @@ thread_local! {
 struct SelectableMenuItem {
     group: &'static str,
     id: String,
-    label: String,
-    item: MenuItem,
+    item: CheckMenuItem,
 }
 
 pub struct StatusItem {
@@ -175,22 +186,22 @@ fn status_text(state: u8) -> String {
 
 fn microphone_menu(cfg: &Config) -> Result<Submenu, Box<dyn std::error::Error>> {
     let menu = Submenu::with_id("microphone", "Microphone", true);
-    let default = MenuItem::with_id(
+    menu.append(&selectable_item(
+        group::MIC,
         "mic:",
-        selected_label("System Default", cfg.audio.device.is_none()),
+        "System Default",
+        cfg.audio.device.is_none(),
         true,
-        None,
-    );
-    menu.append(&default)?;
+    ))?;
     for name in audio::input_devices() {
         let checked = cfg.audio.device.as_deref() == Some(name.as_str());
-        let item = MenuItem::with_id(
+        menu.append(&selectable_item(
+            group::MIC,
             format!("mic:{name}"),
-            selected_label(&name, checked),
+            &name,
+            checked,
             true,
-            None,
-        );
-        menu.append(&item)?;
+        ))?;
     }
     Ok(menu)
 }
@@ -211,13 +222,13 @@ fn model_menu(cfg: &Config) -> Result<Submenu, Box<dyn std::error::Error>> {
         return Ok(menu);
     }
     for choice in &cfg.model.choices {
-        let item = MenuItem::with_id(
+        menu.append(&selectable_item(
+            group::MODEL,
             format!("model:{}", choice.id),
-            selected_label(&choice.label, choice.id == cfg.model.active),
+            &choice.label,
+            choice.id == cfg.model.active,
             true,
-            None,
-        );
-        menu.append(&item)?;
+        ))?;
     }
     menu.append(&PredefinedMenuItem::separator())?;
     menu.append(&MenuItem::with_id(
@@ -232,13 +243,13 @@ fn model_menu(cfg: &Config) -> Result<Submenu, Box<dyn std::error::Error>> {
 fn language_menu(cfg: &Config) -> Result<Submenu, Box<dyn std::error::Error>> {
     let menu = Submenu::with_id("language", "Output Language", true);
     for language in &cfg.language.options {
-        let item = MenuItem::with_id(
+        menu.append(&selectable_item(
+            group::LANGUAGE,
             format!("lang:{language}"),
-            selected_label(language, language == &cfg.language.target),
+            language,
+            language == &cfg.language.target,
             true,
-            None,
-        );
-        menu.append(&item)?;
+        ))?;
     }
     menu.append(&PredefinedMenuItem::separator())?;
     menu.append(&MenuItem::with_id(
@@ -254,58 +265,45 @@ fn speech_menu(cfg: &Config) -> Result<Submenu, Box<dyn std::error::Error>> {
     let menu = Submenu::with_id("speech", "Speech Output", true);
     let backend = Submenu::with_id("speech_backend", "Backend", true);
     for (id, label) in visible_speech_backends() {
-        let item_id = format!("speech_backend:{id}");
-        let item = MenuItem::with_id(
-            &item_id,
-            selected_label(label, cfg.speech.backend == id),
+        backend.append(&selectable_item(
+            group::SPEECH_BACKEND,
+            format!("speech_backend:{id}"),
+            label,
+            cfg.speech.backend == id,
             true,
-            None,
-        );
-        remember_selectable("speech_backend", item_id, label, &item);
-        backend.append(&item)?;
+        ))?;
     }
     menu.append(&backend)?;
 
     let say_voice = Submenu::with_id("say_voice", "macOS Voice", true);
-    let system_voice = MenuItem::with_id(
-        "speech_voice:",
-        selected_label("System Default", cfg.speech.voice.is_none()),
-        true,
-        None,
-    );
-    remember_selectable(
-        "speech_voice",
+    say_voice.append(&selectable_item(
+        group::SAY_VOICE,
         "speech_voice:",
         "System Default",
-        &system_voice,
-    );
-    say_voice.append(&system_voice)?;
+        cfg.speech.voice.is_none(),
+        true,
+    ))?;
     for voice in say_voices(cfg.speech.voice.as_deref()) {
-        let item_id = format!("speech_voice:{voice}");
-        let label = say_voice_label(&voice);
-        let item = MenuItem::with_id(
-            &item_id,
-            selected_label(&label, cfg.speech.voice.as_deref() == Some(voice.as_str())),
+        let selected = cfg.speech.voice.as_deref() == Some(voice.as_str());
+        say_voice.append(&selectable_item(
+            group::SAY_VOICE,
+            format!("speech_voice:{voice}"),
+            say_voice_label(&voice),
+            selected,
             true,
-            None,
-        );
-        remember_selectable("speech_voice", item_id, label, &item);
-        say_voice.append(&item)?;
+        ))?;
     }
     menu.append(&say_voice)?;
 
     let kokoro = Submenu::with_id("kokoro_voice", "Kokoro Speaker", true);
     for voice in kokoro_voices() {
-        let item_id = format!("kokoro_sid:{}", voice.sid);
-        let label = voice.label();
-        let item = MenuItem::with_id(
-            &item_id,
-            selected_label(&label, cfg.speech.kokoro.sid == voice.sid),
+        kokoro.append(&selectable_item(
+            group::KOKORO_SID,
+            format!("kokoro_sid:{}", voice.sid),
+            voice.label(),
+            cfg.speech.kokoro.sid == voice.sid,
             true,
-            None,
-        );
-        remember_selectable("kokoro_sid", item_id, label, &item);
-        kokoro.append(&item)?;
+        ))?;
     }
     menu.append(&kokoro)?;
     menu.append(&PredefinedMenuItem::separator())?;
@@ -323,11 +321,12 @@ fn visible_speech_backends() -> [(&'static str, &'static str); 2] {
     [("say", "macOS Voice"), ("kokoro", "Kokoro")]
 }
 
+/// Move the tick within a radio-style group to `selected_id`. Uses the real
+/// macOS checkmark gutter, so labels no longer shift when selection changes.
 pub fn select_menu_item(group: &'static str, selected_id: &str) {
     SELECTABLE_MENU_ITEMS.with(|items| {
         for item in items.borrow().iter().filter(|item| item.group == group) {
-            item.item
-                .set_text(selected_label(&item.label, item.id == selected_id));
+            item.item.set_checked(item.id == selected_id);
         }
     });
 }
@@ -368,28 +367,26 @@ fn clear_selectable_menu_items() {
     SELECTABLE_MENU_ITEMS.with(|items| items.borrow_mut().clear());
 }
 
-fn remember_selectable(
+/// Build one radio-style option and register it so `select_menu_item` can move
+/// the tick later. Every toggle group goes through here, so no group can be left
+/// unregistered and silently stop updating its checkmark.
+fn selectable_item(
     group: &'static str,
     id: impl Into<String>,
-    label: impl Into<String>,
-    item: &MenuItem,
-) {
+    label: impl AsRef<str>,
+    selected: bool,
+    enabled: bool,
+) -> CheckMenuItem {
+    let id = id.into();
+    let item = CheckMenuItem::with_id(id.clone(), label, enabled, selected, None);
     SELECTABLE_MENU_ITEMS.with(|items| {
         items.borrow_mut().push(SelectableMenuItem {
             group,
-            id: id.into(),
-            label: label.into(),
+            id,
             item: item.clone(),
         });
     });
-}
-
-fn selected_label(label: &str, selected: bool) -> String {
-    if selected {
-        format!("✓ {label}")
-    } else {
-        label.to_string()
-    }
+    item
 }
 
 fn log_label(cfg: &Config) -> String {
@@ -575,9 +572,38 @@ struct TimerContext {
 #[cfg(test)]
 mod tests {
     use super::{
-        is_preferred_say_voice, kokoro_voices, log_label, mode_switch_text, say_voice_label,
+        group, is_preferred_say_voice, kokoro_voices, log_label, mode_switch_text, say_voice_label,
         say_voice_name, visible_speech_backends,
     };
+
+    /// Menu item ids are `"<prefix>:<value>"` and the group name is the prefix, so
+    /// `select_menu_item(group, id)` only matches when the two agree. Registering
+    /// mic/model/language under the wrong prefix is exactly how their checkmarks
+    /// silently stopped moving before.
+    #[test]
+    fn group_names_match_their_menu_id_prefix() {
+        for group in [
+            group::MIC,
+            group::MODEL,
+            group::LANGUAGE,
+            group::SPEECH_BACKEND,
+            group::SAY_VOICE,
+            group::KOKORO_SID,
+        ] {
+            assert!(
+                !group.contains(':'),
+                "group {group} must be the bare prefix, without the colon"
+            );
+        }
+        // The ids built in the menu constructors, spelled out here so a rename on
+        // one side without the other fails the build's test run rather than at runtime.
+        assert_eq!(group::MIC, "mic");
+        assert_eq!(group::MODEL, "model");
+        assert_eq!(group::LANGUAGE, "lang");
+        assert_eq!(group::SPEECH_BACKEND, "speech_backend");
+        assert_eq!(group::SAY_VOICE, "speech_voice");
+        assert_eq!(group::KOKORO_SID, "kokoro_sid");
+    }
 
     #[test]
     fn mode_switch_distinguishes_running_and_next_launch_modes() {

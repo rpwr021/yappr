@@ -311,6 +311,9 @@ impl Runtime {
                     *device = value.clone();
                 }
                 let persisted = value.as_deref().unwrap_or("");
+                // A CheckMenuItem toggles itself on click; this enforces radio
+                // behaviour by clearing the other devices in the group.
+                ui::select_menu_item(ui::group::MIC, id);
                 match Config::set_user_value("audio", "device", persisted) {
                     Ok(()) => log_line(format!(
                         "audio device selected: {}",
@@ -331,6 +334,7 @@ impl Runtime {
             }
             id if id.starts_with("model:") => {
                 let model = id.trim_start_matches("model:");
+                ui::select_menu_item(ui::group::MODEL, id);
                 match Config::set_user_value("models", "active", model) {
                     Ok(()) => log_line(format!("model selected: {model}; restart Yappr to apply")),
                     Err(err) => log_line(format!("model save failed: {err}")),
@@ -338,6 +342,7 @@ impl Runtime {
             }
             id if id.starts_with("lang:") => {
                 let language = id.trim_start_matches("lang:");
+                ui::select_menu_item(ui::group::LANGUAGE, id);
                 match Config::set_user_value("language", "target", language) {
                     Ok(()) => log_line(format!(
                         "output language selected: {language}; restart Yappr to apply"
@@ -353,15 +358,22 @@ impl Runtime {
                     .map(|speech| speech.backend == backend)
                     .unwrap_or(false);
                 if already_selected {
+                    // muda flips a CheckMenuItem before dispatching the event, so
+                    // re-clicking the active backend has already unchecked it. Put
+                    // the tick back rather than leaving the group with none.
+                    ui::select_menu_item(ui::group::SPEECH_BACKEND, id);
                     return;
                 }
                 match Config::set_user_value("speech", "backend", backend) {
                     Ok(()) => {
                         self.update_speech(|speech| speech.backend = backend.to_string());
-                        ui::select_menu_item("speech_backend", id);
+                        ui::select_menu_item(ui::group::SPEECH_BACKEND, id);
                         log_line(format!("speech backend selected: {backend}"));
                     }
-                    Err(err) => log_line(format!("speech backend save failed: {err}")),
+                    Err(err) => {
+                        log_line(format!("speech backend save failed: {err}"));
+                        self.resync_speech_menu();
+                    }
                 }
             }
             id if id == "speech_voice:" || id.starts_with("speech_voice:") => {
@@ -374,8 +386,8 @@ impl Runtime {
                             speech.backend = "say".to_string();
                             speech.voice = (!voice.is_empty()).then_some(voice.to_string());
                         });
-                        ui::select_menu_item("speech_backend", "speech_backend:say");
-                        ui::select_menu_item("speech_voice", id);
+                        ui::select_menu_item(ui::group::SPEECH_BACKEND, "speech_backend:say");
+                        ui::select_menu_item(ui::group::SAY_VOICE, id);
                         log_line(format!(
                             "macOS speech voice selected: {}; backend=say",
                             if voice.is_empty() {
@@ -385,34 +397,20 @@ impl Runtime {
                             }
                         ));
                     }
-                    Err(err) => log_line(format!("speech voice save failed: {err}")),
-                }
-            }
-            id if id.starts_with("supertonic_sid:") => {
-                let sid = id.trim_start_matches("supertonic_sid:");
-                let saved = Config::set_user_value("speech", "backend", "supertonic")
-                    .and_then(|()| Config::set_user_value("speech", "supertonic_sid", sid));
-                match saved {
-                    Ok(()) => {
-                        if let Ok(parsed) = sid.parse() {
-                            self.update_speech(|speech| {
-                                speech.backend = "supertonic".to_string();
-                                speech.supertonic.sid = parsed;
-                            });
-                            ui::select_menu_item("speech_backend", "speech_backend:supertonic");
-                            ui::select_menu_item("supertonic_sid", id);
-                        }
-                        log_line(format!(
-                            "supertonic voice selected: {sid}; backend=supertonic"
-                        ));
+                    Err(err) => {
+                        log_line(format!("speech voice save failed: {err}"));
+                        self.resync_speech_menu();
                     }
-                    Err(err) => log_line(format!("supertonic voice save failed: {err}")),
                 }
             }
+            // No supertonic_sid arm: the menu stopped exposing supertonic, so this
+            // id can never be emitted. `speech.rs` still honours `backend =
+            // supertonic` from config.ini for anyone who set it by hand.
             id if id.starts_with("kokoro_sid:") => {
                 let sid = id.trim_start_matches("kokoro_sid:");
                 let Ok(parsed) = sid.parse() else {
                     log_line(format!("kokoro speaker ignored: invalid sid {sid}"));
+                    self.resync_speech_menu();
                     return;
                 };
                 let already_selected = self
@@ -421,6 +419,8 @@ impl Runtime {
                     .map(|speech| speech.backend == "kokoro" && speech.kokoro.sid == parsed)
                     .unwrap_or(false);
                 if already_selected {
+                    // muda unchecks on re-click before dispatching; put it back.
+                    ui::select_menu_item(ui::group::KOKORO_SID, id);
                     return;
                 }
                 let saved = Config::set_user_value("speech", "backend", "kokoro")
@@ -431,15 +431,41 @@ impl Runtime {
                             speech.backend = "kokoro".to_string();
                             speech.kokoro.sid = parsed;
                         });
-                        ui::select_menu_item("speech_backend", "speech_backend:kokoro");
-                        ui::select_menu_item("kokoro_sid", id);
+                        ui::select_menu_item(ui::group::SPEECH_BACKEND, "speech_backend:kokoro");
+                        ui::select_menu_item(ui::group::KOKORO_SID, id);
                         log_line(format!("kokoro speaker selected: {sid}; backend=kokoro"));
                     }
-                    Err(err) => log_line(format!("kokoro speaker save failed: {err}")),
+                    Err(err) => {
+                        log_line(format!("kokoro speaker save failed: {err}"));
+                        self.resync_speech_menu();
+                    }
                 }
             }
             _ => {}
         }
+    }
+
+    /// Put the speech menu's checkmarks back in sync with the live config.
+    ///
+    /// muda toggles a CheckMenuItem before dispatching its event, so a click that
+    /// we then reject (bad value, failed save) has already moved the tick. Without
+    /// this the menu would claim a selection that was never stored.
+    fn resync_speech_menu(&self) {
+        let Ok(speech) = self.speech.lock() else {
+            return;
+        };
+        ui::select_menu_item(
+            ui::group::SPEECH_BACKEND,
+            &format!("speech_backend:{}", speech.backend),
+        );
+        ui::select_menu_item(
+            ui::group::SAY_VOICE,
+            &format!("speech_voice:{}", speech.voice.as_deref().unwrap_or("")),
+        );
+        ui::select_menu_item(
+            ui::group::KOKORO_SID,
+            &format!("kokoro_sid:{}", speech.kokoro.sid),
+        );
     }
 
     fn update_speech(&self, update: impl FnOnce(&mut SpeechConfig)) {
