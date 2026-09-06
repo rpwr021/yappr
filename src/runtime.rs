@@ -1,3 +1,4 @@
+use crate::asr;
 use crate::audio::{CapturedAudio, Recording};
 use crate::chat::{ChatClient, ChatMode};
 use crate::config::{Config, SpeechConfig};
@@ -15,12 +16,25 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 static RUNTIME: OnceLock<Arc<Runtime>> = OnceLock::new();
 
+/// How long the error icon stays up before the tray falls back to idle.
+/// Long enough to notice, short enough that the app never looks wedged.
+const ERROR_LINGER: std::time::Duration = std::time::Duration::from_secs(4);
+
+/// How often to probe the backend once it has come up, and how long to wait before
+/// the confirming second probe. Slow enough not to matter, fast enough that the
+/// tray is honest well before the user reaches for the hotkey.
+const HEALTH_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(15);
+const HEALTH_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
+
 pub struct Runtime {
     tx: Sender<HotkeyCommand>,
     busy: AtomicBool,
     recording: AtomicBool,
     epoch: AtomicU64,
     pub status: AtomicU8,
+    /// Bumped on every status change so a pending error-clear can tell whether
+    /// the status it wants to reset is still the one it set.
+    status_gen: AtomicU64,
     ready: AtomicBool,
     pub menu_config: Config,
     audio_device: Mutex<Option<String>>,
@@ -56,6 +70,7 @@ impl Runtime {
             recording: AtomicBool::new(false),
             epoch: AtomicU64::new(0),
             status: AtomicU8::new(ui::STARTING),
+            status_gen: AtomicU64::new(0),
             ready: AtomicBool::new(false),
             menu_config,
             audio_device,
@@ -81,9 +96,17 @@ impl Runtime {
                 runtime.mark_ready();
                 return;
             }
-            runtime
-                .status
-                .store(ui::PROVISIONING_MODEL, Ordering::SeqCst);
+            // GPU-poor tier: fetch the on-device ASR model and we're done — no
+            // llama-server, no multi-GB Gemma download, no engine install.
+            if cfg.mode.is_poor() {
+                runtime.store_status(ui::PROVISIONING_MODEL);
+                match server::ensure_asr_model(cfg) {
+                    Ok(_) => runtime.mark_ready(),
+                    Err(err) => runtime.fail_provision(format!("ASR model download failed: {err}")),
+                }
+                return;
+            }
+            runtime.store_status(ui::PROVISIONING_MODEL);
             let paths = match server::ensure_model(cfg) {
                 Ok(paths) => paths,
                 Err(err) => return runtime.fail_provision(format!("model download failed: {err}")),
@@ -91,13 +114,11 @@ impl Runtime {
             let (Some(weights), Some(mmproj)) = (paths.weights, paths.mmproj) else {
                 return runtime.fail_provision("model files missing after download".into());
             };
-            runtime
-                .status
-                .store(ui::PROVISIONING_ENGINE, Ordering::SeqCst);
+            runtime.store_status(ui::PROVISIONING_ENGINE);
             if let Err(err) = server::ensure_engine() {
                 return runtime.fail_provision(format!("engine install failed: {err}"));
             }
-            runtime.status.store(ui::STARTING, Ordering::SeqCst);
+            runtime.store_status(ui::STARTING);
             match server::start(cfg, &weights, &mmproj) {
                 Ok(server) => {
                     if let Ok(mut slot) = runtime.managed_server.lock() {
@@ -132,17 +153,71 @@ impl Runtime {
         });
     }
 
-    fn mark_ready(&self) {
+    /// Single write path for the tray status. Every change bumps `status_gen` so
+    /// a pending error-clear can detect that it has been superseded. Returns the
+    /// generation this write produced.
+    fn store_status(&self, status: u8) -> u64 {
+        self.status.store(status, Ordering::SeqCst);
+        self.status_gen.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    fn mark_ready(self: &Arc<Self>) {
         self.ready.store(true, Ordering::SeqCst);
         // Don't clobber a permission notice raised by the hotkey layer.
         if self.status.load(Ordering::SeqCst) != ui::NOTICE {
-            self.status.store(ui::IDLE, Ordering::SeqCst);
+            self.store_status(ui::IDLE);
         }
         log_line("backend ready");
+        self.watch_backend();
     }
 
+    /// Counterpart to `mark_ready`: the backend answered once and has now stopped.
+    /// Without this, `ready` was write-once, so a dead llama-server left the tray
+    /// showing "Ready" while every dictation burned the full request timeout and
+    /// produced nothing. We report and stop accepting work; we do not respawn.
+    fn mark_backend_down(&self, reason: &str) {
+        if !self.ready.swap(false, Ordering::SeqCst) {
+            return;
+        }
+        self.store_status(ui::BACKEND_DOWN);
+        log_line(format!(
+            "backend stopped answering ({reason}); quit and reopen Yappr to restart it"
+        ));
+    }
+
+    /// Poll the backend so its death is noticed while idle, not on the next hotkey
+    /// press. Only meaningful for a managed server: with `manage = false` the
+    /// endpoint is someone else's to run, and in poor mode there is no server.
+    fn watch_backend(self: &Arc<Self>) {
+        let cfg = &self.menu_config;
+        if !cfg.server.manage || cfg.mode.is_poor() {
+            return;
+        }
+        let runtime = Arc::clone(self);
+        let port = cfg.server.port;
+        std::thread::spawn(move || loop {
+            std::thread::sleep(HEALTH_POLL_INTERVAL);
+            if !runtime.ready.load(Ordering::SeqCst) {
+                return;
+            }
+            // One failed probe can be a slow model holding the socket, so require
+            // two consecutive misses before declaring the backend dead.
+            if server::healthy(port) {
+                continue;
+            }
+            std::thread::sleep(HEALTH_RETRY_DELAY);
+            if !server::healthy(port) {
+                runtime.mark_backend_down("health probe failed twice");
+                return;
+            }
+        });
+    }
+
+    /// Provisioning failures are terminal: there is no working backend to fall
+    /// back to, so this error stays on screen (unlike transient per-request
+    /// errors, which `set_status` clears after ERROR_LINGER).
     fn fail_provision(&self, message: String) {
-        self.status.store(ui::ERROR, Ordering::SeqCst);
+        self.store_status(ui::ERROR);
         log_line(message);
     }
 
@@ -165,11 +240,20 @@ impl Runtime {
     }
 
     pub fn hotkey_down(&self, chat: bool) {
+        // Dictation Only mode has no chat model loaded.
+        if chat && self.menu_config.mode.is_poor() {
+            log_line("ignoring chat hotkey: Dictation Only mode has no chat model");
+            self.announce("Chat is unavailable in Dictation Only mode.");
+            return;
+        }
         if !self.ready.load(Ordering::SeqCst) {
             // Let the user know it's working, not broken — especially during the
-            // long first-run model download.
-            let downloading = self.status.load(Ordering::SeqCst) == ui::PROVISIONING_MODEL;
-            let msg = if downloading {
+            // long first-run model download. A stopped backend is the exception:
+            // that one is broken, and waiting will not fix it.
+            let status = self.status.load(Ordering::SeqCst);
+            let msg = if status == ui::BACKEND_DOWN {
+                "The backend stopped. Quit and reopen Yappr.".to_string()
+            } else if status == ui::PROVISIONING_MODEL {
                 match server::download_percent() {
                     Some(p) => format!("I'm still fetching files, {p} percent done."),
                     None => "I'm still fetching files, one moment.".to_string(),
@@ -233,6 +317,16 @@ impl Runtime {
                         value.as_deref().unwrap_or("System Default")
                     )),
                     Err(err) => log_line(format!("audio device save failed: {err}")),
+                }
+            }
+            id if id.starts_with("mode:") => {
+                // Fired by the NSSwitch toggle (mode:rich / mode:poor). The switch
+                // updates its own position; we just persist. Takes effect on next
+                // launch since provisioning differs per tier.
+                let tier = id.trim_start_matches("mode:");
+                match Config::set_user_value("mode", "tier", tier) {
+                    Ok(()) => log_line(format!("mode selected: {tier}; restart Yappr to apply")),
+                    Err(err) => log_line(format!("mode save failed: {err}")),
                 }
             }
             id if id.starts_with("model:") => {
@@ -497,7 +591,17 @@ fn process_recording(
         }
     }
     set_status(ui::TRANSCRIBING);
-    let text = match client.transcribe_wav(&captured.wav) {
+    let transcription = if cfg.mode.is_poor() {
+        asr::transcribe(
+            &captured.pcm,
+            captured.sample_rate,
+            &cfg.asr,
+            &cfg.language.source,
+        )
+    } else {
+        client.transcribe_wav(&captured.wav)
+    };
+    let text = match transcription {
         Ok(text) => text,
         Err(err) => {
             if !is_current(epoch) {
@@ -572,6 +676,60 @@ fn is_current(epoch: u64) -> bool {
 
 fn set_status(status: u8) {
     if let Some(runtime) = RUNTIME.get() {
-        runtime.status.store(status, Ordering::SeqCst);
+        let gen = runtime.store_status(status);
+        // A transient failure must not leave the tray stuck on the error icon.
+        // Fall back to idle after a beat, unless something else has since moved
+        // the status on (a new recording, a provisioning step, another error).
+        if status == ui::ERROR {
+            let runtime = Arc::clone(runtime);
+            std::thread::spawn(move || {
+                std::thread::sleep(ERROR_LINGER);
+                if should_recover(
+                    gen,
+                    runtime.status_gen.load(Ordering::SeqCst),
+                    runtime.ready.load(Ordering::SeqCst),
+                ) {
+                    runtime.store_status(ui::IDLE);
+                    log_line("recovered to idle after error");
+                }
+            });
+        }
+    }
+}
+
+/// Whether a lingering error should fall back to idle. Recover only if nothing
+/// else has changed the status since (`gen == current_gen`) and the backend is
+/// actually up — a failed provision has no working state to return to, so its
+/// error stays on screen.
+fn should_recover(gen: u64, current_gen: u64, ready: bool) -> bool {
+    gen == current_gen && ready
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_recover;
+
+    #[test]
+    fn recovers_to_idle_after_a_transient_error() {
+        assert!(should_recover(7, 7, true));
+    }
+
+    #[test]
+    fn keeps_error_visible_when_backend_never_came_up() {
+        assert!(!should_recover(7, 7, false));
+    }
+
+    #[test]
+    fn skips_recovery_when_status_moved_on() {
+        // A new recording (or another error) bumped the generation while the
+        // clear was pending; clobbering it back to idle would hide live state.
+        assert!(!should_recover(7, 8, true));
+    }
+
+    #[test]
+    fn keeps_error_visible_after_the_backend_stops() {
+        // mark_backend_down clears `ready`, so a request that failed against a
+        // dead backend must not self-clear to idle and claim everything is fine.
+        assert!(!should_recover(7, 7, false));
     }
 }

@@ -1,3 +1,4 @@
+use crate::asr;
 use crate::audio;
 use crate::chat::{ChatClient, ChatMode};
 use crate::config::Config;
@@ -25,7 +26,8 @@ pub fn run(args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
         let seconds = string_arg(&args, "--seconds")
             .and_then(|value| value.parse::<f32>().ok())
             .unwrap_or(3.0);
-        let captured = audio::record_for(seconds, cfg.audio.samplerate)?;
+        let captured =
+            audio::record_for(cfg.audio.device.as_deref(), seconds, cfg.audio.samplerate)?;
         let path = PathBuf::from("/tmp/yappr-record-test.wav");
         fs::write(&path, &captured.wav)?;
         println!(
@@ -51,11 +53,28 @@ pub fn run(args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    if let Some(path) = arg_value(&args, "--wav") {
+    if let Some(question) = string_arg(&args, "--ask") {
         let _server = start_backend(&cfg)?;
-        let wav = fs::read(path)?;
-        let client = ChatClient::new(cfg.clone())?;
-        let text = client.transcribe_wav(&wav)?;
+        let answer = ChatClient::new(cfg.clone())?.answer(question, ChatMode::Spoken)?;
+        println!("answer: {answer}");
+        return Ok(());
+    }
+
+    if let Some(path) = arg_value(&args, "--wav") {
+        let text = if cfg.mode.is_poor() {
+            // GPU-poor: in-process ASR, no llama-server.
+            server::ensure_asr_model(&cfg)?;
+            let captured = audio::decode_wav(&fs::read(path)?)?;
+            asr::transcribe(
+                &captured.pcm,
+                captured.sample_rate,
+                &cfg.asr,
+                &cfg.language.source,
+            )?
+        } else {
+            let _server = start_backend(&cfg)?;
+            ChatClient::new(cfg.clone())?.transcribe_wav(&fs::read(path)?)?
+        };
         println!("{text}");
         if args.iter().any(|arg| arg == "--paste") {
             inject::paste_text(&text)?;
@@ -77,6 +96,11 @@ pub fn run(args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
 
     if args.is_empty() || args.iter().any(|arg| arg == "--app") {
         let instance_lock = InstanceLock::acquire()?;
+        // Trigger the macOS microphone prompt up front if access hasn't been
+        // decided yet. Without an explicit request the OS silently streams zero
+        // samples instead of prompting. Resolves asynchronously; capture
+        // re-checks authorization.
+        perms::request_microphone_access();
         let client = ChatClient::new(cfg.clone())?;
         let runtime = Runtime::new(cfg, client);
         runtime.hold_instance_lock(instance_lock);
@@ -106,6 +130,11 @@ fn start_backend(cfg: &Config) -> Result<Option<ManagedServer>, Box<dyn std::err
 
 fn print_checks(cfg: &Config) {
     println!("config: {}", Config::user_config_path().display());
+    println!("mode tier: {}", cfg.mode.tier);
+    if cfg.mode.is_poor() {
+        println!("asr archive: {}", cfg.asr.archive);
+        println!("asr model_dir: {}", cfg.asr.model_dir);
+    }
     println!("server endpoint: {}", cfg.server.endpoint);
     println!("server port: {}", cfg.server.port);
     println!("server manage: {}", cfg.server.manage);
@@ -158,6 +187,7 @@ fn print_checks(cfg: &Config) {
     println!("input monitoring: {}", permissions.input_monitoring);
     println!("accessibility: {}", permissions.accessibility);
     println!("microphone: {}", permissions.microphone);
+    println!("microphone device: {}", permissions.microphone_device);
     println!(
         "llama-server: {:?}",
         server::resolve_binary(&cfg.server.binary)
@@ -181,7 +211,7 @@ fn string_arg<'a>(args: &'a [String], key: &str) -> Option<&'a str> {
 
 fn print_usage() {
     eprintln!(
-        "Yappr Rust shell\n\n  yappr [--app]\n  yappr --check\n  yappr --record-test [--seconds 3]\n  yappr --serve\n  yappr --speak text\n  yappr --wav audio.wav [--paste]\n  yappr --ask-wav audio.wav\n\nDefault app mode: hold Right Option to dictate; hold Cmd+Right Option to chat."
+        "Yappr Rust shell\n\n  yappr [--app]\n  yappr --check\n  yappr --record-test [--seconds 3]\n  yappr --serve\n  yappr --speak text\n  yappr --ask question\n  yappr --wav audio.wav [--paste]\n  yappr --ask-wav audio.wav\n\nDefault app mode: hold Right Option to dictate; hold Cmd+Right Option to chat."
     );
 }
 

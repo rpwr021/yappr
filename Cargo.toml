@@ -7,16 +7,18 @@ license = "Apache-2.0"
 
 [dependencies]
 base64 = "0.22.1"
+block2 = "0.6.1"
 chrono = { version = "0.4.44", default-features = false, features = ["clock"] }
 cpal = "0.16.0"
 dirs = "6.0.0"
 hound = "3.5.1"
 libc = "0.2.186"
 objc2 = "0.6.4"
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSApplication", "NSRunningApplication"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSApplication", "NSRunningApplication", "NSMenu", "NSMenuItem", "NSSwitch", "NSControl", "NSResponder", "NSView", "NSCell", "NSTextField", "NSBox", "NSColor"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSGeometry", "NSString"] }
 png = "0.18.1"
 reqwest = { version = "0.12.28", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
-sherpa-onnx = { version = "1.13.2", default-features = false, features = ["static"] }
+sherpa-onnx = { version = "1.13.3", default-features = false, features = ["static"] }
 tray-icon = "0.23.1"

@@ -28,11 +28,22 @@ impl Recording {
         _max_seconds: f32,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let host = cpal::default_host();
-        let device = match device_name {
-            Some(name) => host
-                .input_devices()?
-                .find(|device| device.name().map(|n| n == name).unwrap_or(false))
-                .ok_or_else(|| format!("input device not found: {name}"))?,
+        let configured = match device_name {
+            Some(name) => {
+                let found = host
+                    .input_devices()?
+                    .find(|device| device.name().map(|n| n == name).unwrap_or(false));
+                if found.is_none() {
+                    crate::logger::log_line(format!(
+                        "input device not found: {name}; falling back to system default"
+                    ));
+                }
+                found
+            }
+            None => None,
+        };
+        let device = match configured {
+            Some(device) => device,
             None => host
                 .default_input_device()
                 .ok_or("no default input device available")?,
@@ -116,10 +127,11 @@ impl Recording {
 }
 
 pub fn record_for(
+    device_name: Option<&str>,
     seconds: f32,
     sample_rate: u32,
 ) -> Result<CapturedAudio, Box<dyn std::error::Error>> {
-    let recording = Recording::start(None, sample_rate, seconds)?;
+    let recording = Recording::start(device_name, sample_rate, seconds)?;
     std::thread::sleep(Duration::from_secs_f32(seconds.max(0.0)));
     recording.stop(0.0)
 }
@@ -200,6 +212,46 @@ fn resample_linear(samples: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
         out.push(a + (b - a) * frac);
     }
     out
+}
+
+/// Decode WAV bytes into mono f32 PCM for in-process ASR. Averages channels to
+/// mono; leaves the sample rate as-is (sherpa-onnx resamples internally).
+pub fn decode_wav(bytes: &[u8]) -> Result<CapturedAudio, Box<dyn std::error::Error>> {
+    let mut reader = hound::WavReader::new(Cursor::new(bytes))?;
+    let spec = reader.spec();
+    let channels = spec.channels.max(1) as usize;
+    let interleaved: Vec<f32> = match spec.sample_format {
+        hound::SampleFormat::Float => reader.samples::<f32>().filter_map(Result::ok).collect(),
+        hound::SampleFormat::Int => {
+            let max = (1i64 << (spec.bits_per_sample - 1)) as f32;
+            reader
+                .samples::<i32>()
+                .filter_map(Result::ok)
+                .map(|v| v as f32 / max)
+                .collect()
+        }
+    };
+    let pcm: Vec<f32> = if channels <= 1 {
+        interleaved
+    } else {
+        interleaved
+            .chunks(channels)
+            .map(|frame| frame.iter().sum::<f32>() / channels as f32)
+            .collect()
+    };
+    let peak = peak(&pcm);
+    let nonzero_samples = pcm.iter().filter(|s| s.abs() > 0.00001).count();
+    let samples = pcm.len();
+    let sample_rate = spec.sample_rate;
+    Ok(CapturedAudio {
+        wav: bytes.to_vec(),
+        pcm,
+        sample_rate,
+        peak,
+        seconds: samples as f32 / sample_rate.max(1) as f32,
+        samples,
+        nonzero_samples,
+    })
 }
 
 fn encode_wav(

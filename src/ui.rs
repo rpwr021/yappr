@@ -22,6 +22,9 @@ pub const NOTICE: u8 = 7;
 pub const PROVISIONING_MODEL: u8 = 8;
 pub const PROVISIONING_ENGINE: u8 = 9;
 pub const STARTING: u8 = 10;
+/// The backend was up and then stopped answering. Distinct from ERROR because it
+/// is not tied to one request: nothing will work until Yappr is relaunched.
+pub const BACKEND_DOWN: u8 = 11;
 
 thread_local! {
     static SELECTABLE_MENU_ITEMS: RefCell<Vec<SelectableMenuItem>> = const { RefCell::new(Vec::new()) };
@@ -48,7 +51,12 @@ pub fn create_status_item(cfg: &Config) -> Result<StatusItem, Box<dyn std::error
     let status = MenuItem::with_id("status", "Status: Ready", false, None);
     // Non-clickable reminders of the (fixed) push-to-talk hotkeys.
     let dictate_hint = MenuItem::with_id("hint_dictate", "Dictate: hold Right Option", false, None);
-    let chat_hint = MenuItem::with_id("hint_chat", "Chat: hold ⌘ + Right Option", false, None);
+    let chat_hint_text = if cfg.mode.is_poor() {
+        "Chat: unavailable in Dictation Only mode"
+    } else {
+        "Chat: hold ⌘ + Right Option"
+    };
+    let chat_hint = MenuItem::with_id("hint_chat", chat_hint_text, false, None);
     let microphone = microphone_menu(cfg)?;
     let model = model_menu(cfg)?;
     let language = language_menu(cfg)?;
@@ -68,6 +76,8 @@ pub fn create_status_item(cfg: &Config) -> Result<StatusItem, Box<dyn std::error
         &dictate_hint,
         &chat_hint,
         &PredefinedMenuItem::separator(),
+        // The mode NSSwitch toggle is inserted here (index 4) after the
+        // tray is built, via mode_switch::install on the native NSMenu.
         &microphone,
         &model,
         &language,
@@ -85,6 +95,13 @@ pub fn create_status_item(cfg: &Config) -> Result<StatusItem, Box<dyn std::error
         }
     }));
 
+    // Grab the native NSMenu before muda's Menu is moved into the tray; the tray
+    // keeps the Menu alive, so the pointer stays valid for the menu's lifetime.
+    #[cfg(target_os = "macos")]
+    let ns_menu = {
+        use tray_icon::menu::ContextMenu;
+        menu.ns_menu()
+    };
     let tray = TrayIconBuilder::new()
         .with_icon(icon_for_state(IDLE, 0)?)
         .with_title(" ")
@@ -93,6 +110,8 @@ pub fn create_status_item(cfg: &Config) -> Result<StatusItem, Box<dyn std::error
         .with_menu_on_left_click(true)
         .with_menu_on_right_click(true)
         .build()?;
+    #[cfg(target_os = "macos")]
+    crate::mode_switch::install(ns_menu, !cfg.mode.is_poor());
     log_line("menu bar status item created");
     Ok(StatusItem {
         tray,
@@ -177,7 +196,15 @@ fn microphone_menu(cfg: &Config) -> Result<Submenu, Box<dyn std::error::Error>> 
 }
 
 fn model_menu(cfg: &Config) -> Result<Submenu, Box<dyn std::error::Error>> {
-    let menu = Submenu::with_id("model", "Model", true);
+    let menu = Submenu::with_id(
+        "model",
+        if cfg.mode.is_poor() {
+            "Chat Model (Dictate + Chat mode only)"
+        } else {
+            "Chat Model"
+        },
+        !cfg.mode.is_poor(),
+    );
     if cfg.model.choices.is_empty() {
         let item = MenuItem::with_id("model_none", "No configured models", false, None);
         menu.append(&item)?;
@@ -226,11 +253,7 @@ fn language_menu(cfg: &Config) -> Result<Submenu, Box<dyn std::error::Error>> {
 fn speech_menu(cfg: &Config) -> Result<Submenu, Box<dyn std::error::Error>> {
     let menu = Submenu::with_id("speech", "Speech Output", true);
     let backend = Submenu::with_id("speech_backend", "Backend", true);
-    for (id, label) in [
-        ("supertonic", "Supertonic 3"),
-        ("kokoro", "Kokoro"),
-        ("say", "macOS Say"),
-    ] {
+    for (id, label) in visible_speech_backends() {
         let item_id = format!("speech_backend:{id}");
         let item = MenuItem::with_id(
             &item_id,
@@ -271,22 +294,6 @@ fn speech_menu(cfg: &Config) -> Result<Submenu, Box<dyn std::error::Error>> {
     }
     menu.append(&say_voice)?;
 
-    let supertonic = Submenu::with_id("supertonic_voice", "Supertonic Voice", true);
-    let supertonic_default = MenuItem::with_id(
-        "supertonic_sid:0",
-        selected_label("Default", cfg.speech.supertonic.sid == 0),
-        true,
-        None,
-    );
-    remember_selectable(
-        "supertonic_sid",
-        "supertonic_sid:0",
-        "Default",
-        &supertonic_default,
-    );
-    supertonic.append(&supertonic_default)?;
-    menu.append(&supertonic)?;
-
     let kokoro = Submenu::with_id("kokoro_voice", "Kokoro Speaker", true);
     for voice in kokoro_voices() {
         let item_id = format!("kokoro_sid:{}", voice.sid);
@@ -312,6 +319,10 @@ fn speech_menu(cfg: &Config) -> Result<Submenu, Box<dyn std::error::Error>> {
     Ok(menu)
 }
 
+fn visible_speech_backends() -> [(&'static str, &'static str); 2] {
+    [("say", "macOS Voice"), ("kokoro", "Kokoro")]
+}
+
 pub fn select_menu_item(group: &'static str, selected_id: &str) {
     SELECTABLE_MENU_ITEMS.with(|items| {
         for item in items.borrow().iter().filter(|item| item.group == group) {
@@ -319,6 +330,38 @@ pub fn select_menu_item(group: &'static str, selected_id: &str) {
                 .set_text(selected_label(&item.label, item.id == selected_id));
         }
     });
+}
+
+/// Capability-first mode names used throughout the menu. "GPU Poor/Rich" was
+/// technically descriptive but made it unclear whether chat was available.
+pub(crate) fn mode_name(tier: &str) -> &'static str {
+    if tier == "poor" {
+        "Dictation Only"
+    } else {
+        "Dictate + Chat"
+    }
+}
+
+pub(crate) fn mode_memory(tier: &str) -> &'static str {
+    if tier == "poor" {
+        "~0.65 GB memory"
+    } else {
+        "~4 GB memory"
+    }
+}
+
+pub(crate) fn mode_switch_text(active_tier: &str, selected_tier: &str) -> (String, String) {
+    if selected_tier == active_tier {
+        (
+            format!("Mode: {}", mode_name(active_tier)),
+            format!("Running now · {}", mode_memory(active_tier)),
+        )
+    } else {
+        (
+            format!("Next launch: {}", mode_name(selected_tier)),
+            format!("Restart required · currently {}", mode_name(active_tier)),
+        )
+    }
 }
 
 fn clear_selectable_menu_items() {
@@ -495,6 +538,7 @@ fn status_label(state: u8) -> &'static str {
         SPEAKING => "Status: Speaking",
         NOTICE => "Status: Needs Input/Access/Mic",
         ERROR => "Status: Error; see log",
+        BACKEND_DOWN => "Status: Backend stopped; quit and reopen Yappr",
         PROVISIONING_MODEL => "Status: Downloading model…",
         PROVISIONING_ENGINE => "Status: Installing engine…",
         STARTING => "Status: Starting…",
@@ -531,11 +575,31 @@ struct TimerContext {
 #[cfg(test)]
 mod tests {
     use super::{
-        is_preferred_say_voice, kokoro_voices, log_label, say_voice_label, say_voice_name,
+        is_preferred_say_voice, kokoro_voices, log_label, mode_switch_text, say_voice_label,
+        say_voice_name, visible_speech_backends,
     };
+
+    #[test]
+    fn mode_switch_distinguishes_running_and_next_launch_modes() {
+        assert_eq!(
+            mode_switch_text("rich", "rich"),
+            (
+                "Mode: Dictate + Chat".to_string(),
+                "Running now · ~4 GB memory".to_string()
+            )
+        );
+        assert_eq!(
+            mode_switch_text("rich", "poor"),
+            (
+                "Next launch: Dictation Only".to_string(),
+                "Restart required · currently Dictate + Chat".to_string()
+            )
+        );
+    }
     use crate::config::{
-        AudioConfig, ChatConfig, Config, KokoroConfig, LanguageConfig, LoggingConfig, ModelConfig,
-        SearchConfig, ServerConfig, SpeechConfig, SupertonicConfig, VadConfig,
+        AsrConfig, AudioConfig, ChatConfig, Config, KokoroConfig, LanguageConfig, LoggingConfig,
+        ModeConfig, ModelConfig, SearchConfig, ServerConfig, SpeechConfig, SupertonicConfig,
+        VadConfig,
     };
 
     #[test]
@@ -577,6 +641,14 @@ mod tests {
     }
 
     #[test]
+    fn only_exposes_supported_primary_speech_backends() {
+        assert_eq!(
+            visible_speech_backends(),
+            [("say", "macOS Voice"), ("kokoro", "Kokoro")]
+        );
+    }
+
+    #[test]
     fn log_menu_uses_effective_config() {
         let mut cfg = test_config();
         assert_eq!(log_label(&cfg), "Logs: /tmp/yappr.log");
@@ -587,6 +659,15 @@ mod tests {
 
     fn test_config() -> Config {
         Config {
+            mode: ModeConfig {
+                tier: "rich".to_string(),
+            },
+            asr: AsrConfig {
+                repo: String::new(),
+                release: String::new(),
+                archive: String::new(),
+                model_dir: String::new(),
+            },
             server: ServerConfig {
                 endpoint: String::new(),
                 port: 0,

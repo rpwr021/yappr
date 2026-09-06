@@ -31,10 +31,13 @@ fi
 
 if [ -n "${SIGN_IDENTITY:-}" ]; then
   codesign --force --options runtime --entitlements resources/Entitlements.plist --sign "$SIGN_IDENTITY" "$APP"
-  echo "signed with identity: $SIGN_IDENTITY"
+  echo "signed with stable identity: $SIGN_IDENTITY"
 else
   codesign --force --entitlements resources/Entitlements.plist --sign - "$APP"
-  echo "WARN: 'Yappr Self-Signed' cert not found; used ad-hoc signing."
+  echo "WARN: no stable code-signing identity found; used ad-hoc signing."
+  echo "      Ad-hoc signatures change every rebuild, so macOS will KEEP"
+  echo "      dropping the Microphone / Input Monitoring grants. Fix once with:"
+  echo "          ./scripts/make_signing_identity.sh"
 fi
 
 echo "Built $APP"

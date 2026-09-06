@@ -65,8 +65,9 @@ matching `mmproj` file.
 | `ctx_size` | `8192` | llama.cpp context size (`-c`). |
 | `ngl` | `99` | Number of layers offloaded to the GPU (`-ngl`). |
 
-Gemma 4 E2B, E4B, and 12B are the intended audio-capable options. Switching
-models in the menu writes `[models] active` and requires a restart.
+Gemma 4 E2B is the only model included by default. Adding a compatible
+`[model:<id>]` section automatically exposes it in the menu. Switching models
+writes `[models] active` and requires a restart.
 
 ## `[server]`
 
@@ -86,7 +87,7 @@ Microphone capture settings.
 
 | Key | Default | Description |
 | --- | --- | --- |
-| `device` | *(system default)* | Input device name; empty uses the system default. Set from the menu-bar Microphone submenu. |
+| `device` | *(system default)* | Input device name; empty uses the system default. Set from the menu-bar Microphone submenu. If the named device is absent (unplugged), Yappr logs a warning and records from the system default instead; the name is kept so the device is picked up again when it reconnects. |
 | `samplerate` | `16000` | Target sample rate (Hz) fed to ASR; input is resampled to this. |
 | `max_seconds` | `28` | Maximum length of a single recording. |
 | `tail_seconds` | `0.4` | Extra audio kept after the hotkey is released. |
@@ -124,13 +125,13 @@ Voice-chat behavior.
 
 ## `[speech]`
 
-Text-to-speech for spoken answers. If a model backend (`supertonic` / `kokoro`)
-fails to initialize (e.g. its model files are missing), Yappr logs the failure
-and falls back to `say`.
+Text-to-speech for spoken answers. The menu exposes macOS Voice (`say`) and
+Kokoro. If Kokoro fails to initialize (e.g. its model files are missing), Yappr
+logs the failure and falls back to `say`.
 
 | Key | Default | Description |
 | --- | --- | --- |
-| `backend` | `say` | `say` (macOS built-in, no download), `supertonic` (local Supertonic 3), or `kokoro` (local Kokoro). |
+| `backend` | `say` | `say` (macOS built-in, no download) or `kokoro` (local Kokoro). Legacy `supertonic` values remain readable but are not shown in the menu. |
 | `voice` | *(system default)* | macOS `say` voice. |
 | `rate` | `190` | macOS `say` speech rate (words/min). |
 | `supertonic_model_dir` | `~/.yappr/models/sherpa-onnx-supertonic-3-tts-int8-2026-05-11` | Supertonic model directory. |
@@ -145,15 +146,8 @@ and falls back to `say`.
 | `kokoro_lang` | `en` | Kokoro language. |
 | `kokoro_threads` | `2` | Kokoro inference threads. |
 
-For Supertonic, download the sherpa-onnx Supertonic package and point
-`supertonic_model_dir` at the extracted directory. It must contain the
-Supertonic int8 ONNX files, `tts.json`, `unicode_indexer.bin`, and `voice.bin`.
-
-```ini
-[speech]
-backend = supertonic
-supertonic_model_dir = ~/.yappr/models/sherpa-onnx-supertonic-3-tts-int8-2026-05-11
-```
+The `supertonic_*` keys are retained only for compatibility with existing
+manual configurations. Supertonic is no longer selectable in the UI.
 
 ## `[search]`
 

@@ -77,7 +77,9 @@ for local inference.
 Supported models are GGUF models with native audio input and a matching
 `mmproj` file. The default is
 [`google/gemma-4-E2B-it-qat-q4_0-gguf`](https://huggingface.co/google/gemma-4-E2B-it-qat-q4_0-gguf).
-Gemma 4 E2B, E4B, and 12B are the intended audio-capable Gemma 4 options.
+Only Gemma 4 E2B is included in the default menu to keep the initial download
+and memory requirements approachable. Compatible models can still be added
+with a `[model:<id>]` config section.
 
 ## Client Config
 
@@ -95,8 +97,9 @@ Highlights:
   Hugging Face repo/files, `ctx_size`, and `ngl`.
 - `[server]`: `llama-server` endpoint/port, whether Yappr manages it, and which
   binary to use.
-- `[speech] backend`: `say` (macOS built-in, default), `supertonic`, or
-  `kokoro`. A model backend that fails to load falls back to `say`.
+- `[speech] backend`: `say` (macOS built-in, default) or `kokoro`. A model
+  backend that fails to load falls back to `say`. Legacy `supertonic` config
+  remains accepted but is no longer exposed in the menu.
 - `[search]`: the `web_search` tool. Yappr probes the SearXNG `endpoint`, falls
   back to DuckDuckGo, and only offers the tool if a backend is reachable.
 - `[logging] debug`: keep `false` unless you want transcripts, answers, and tool
