@@ -49,10 +49,10 @@ fn png_for_state_frame(state: u8, frame: usize) -> &'static [u8] {
         ANSWERING => ANSWERING_ICON,
         SPEAKING => SPEAKING_ICON,
         ERROR => ERROR_ICON,
-        // Reuse the error art: a stopped backend is a failure state, and rendering
-        // it as idle would repeat the NOTICE mistake of looking healthy.
-        BACKEND_DOWN | SETUP_FAILED => ERROR_ICON,
-        NOTICE => IDLE_ICON,
+        // Failure states share the error art. NOTICE used to render IDLE_ICON,
+        // which made a blocked app look healthy in the menu bar: the only signal
+        // that hotkeys were dead was a status line you had to open the menu to see.
+        BACKEND_DOWN | SETUP_FAILED | NOTICE => ERROR_ICON,
         PROVISIONING_MODEL | PROVISIONING_ENGINE | STARTING => TRANSCRIBING_ICON,
         _ => IDLE_ICON,
     }
@@ -260,6 +260,16 @@ mod tests {
         assert!(icon_for_state(IDLE, 0).is_ok());
         assert!(icon_for_state(TRANSCRIBING, 7).is_ok());
         assert!(icon_for_state(BACKEND_DOWN, 0).is_ok());
+    }
+
+    #[test]
+    fn permission_notice_does_not_look_healthy() {
+        // The regression this guards: NOTICE mapped to IDLE_ICON, so an app with
+        // hotkeys disabled was visually identical to a working one.
+        assert!(!std::ptr::eq(
+            png_for_state_frame(NOTICE, 0),
+            png_for_state_frame(IDLE, 0)
+        ));
     }
 
     #[test]

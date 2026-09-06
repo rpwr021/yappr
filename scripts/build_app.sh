@@ -21,12 +21,19 @@ if [ -n "${YAPPR_BUILD:-}" ]; then
 fi
 
 SIGN_IDENTITY="${YAPPR_CODESIGN_IDENTITY:-}"
+# Select by SHA-1 hash, not by name. Duplicate certificates can share the common
+# name ("Yappr Self-Signed" imported twice, only one with a private key), and
+# codesign then refuses with "ambiguous (matches ...)". find-identity -p
+# codesigning only lists identities that have a usable private key, so the first
+# hash it reports is the one that can actually sign.
 if [ -z "$SIGN_IDENTITY" ]; then
   SIGN_IDENTITY="$(security find-identity -v -p codesigning \
-    ~/Library/Keychains/login.keychain-db 2>/dev/null | awk -F '"' '/Yappr Self-Signed/{print $2; exit}' || true)"
+    ~/Library/Keychains/login.keychain-db 2>/dev/null \
+    | awk '/Yappr Self-Signed/{print $2; exit}' || true)"
 fi
 if [ -z "$SIGN_IDENTITY" ]; then
-  SIGN_IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null | awk -F '"' '/\\)/{print $2; exit}' || true)"
+  SIGN_IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null \
+    | awk '/^ *[0-9]+\)/{print $2; exit}' || true)"
 fi
 
 if [ -n "${SIGN_IDENTITY:-}" ]; then

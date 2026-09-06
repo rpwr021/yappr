@@ -177,7 +177,8 @@ extern "C" fn animation_tick(_timer: *mut c_void, info: *mut c_void) {
     item.status.set_text(status_text(state));
 }
 
-/// Status line text, with live download progress appended while fetching the model.
+/// Status line text, with live download progress appended while fetching the model
+/// and the actually-missing permissions named when access is blocked.
 fn status_text(state: u8) -> String {
     let base = status_label(state);
     if state == PROVISIONING_MODEL {
@@ -185,7 +186,39 @@ fn status_text(state: u8) -> String {
             return format!("{base} {pct}%");
         }
     }
+    if state == NOTICE {
+        if let Some(text) = missing_permissions_text() {
+            return text;
+        }
+    }
     base.to_string()
+}
+
+/// Name the permissions that are actually missing, e.g. "Status: Grant Input
+/// Monitoring". The old label was a fixed "Needs Input/Access/Mic" listing all
+/// three, so a user whose only gap was Input Monitoring went looking at the
+/// Microphone setting, which was already granted.
+///
+/// Cached because this runs from the 0.35s tray tick. Uses `perms::grants()`
+/// rather than `report()` to stay off the CoreAudio device query.
+fn missing_permissions_text() -> Option<String> {
+    const RECHECK: std::time::Duration = std::time::Duration::from_secs(2);
+    thread_local! {
+        static CACHE: RefCell<Option<(std::time::Instant, Option<String>)>> =
+            const { RefCell::new(None) };
+    }
+    CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if let Some((at, text)) = cache.as_ref() {
+            if at.elapsed() < RECHECK {
+                return text.clone();
+            }
+        }
+        let missing = crate::perms::grants().missing();
+        let text = (!missing.is_empty()).then(|| format!("Status: Grant {}", missing.join(" + ")));
+        *cache = Some((std::time::Instant::now(), text.clone()));
+        text
+    })
 }
 
 fn microphone_menu(cfg: &Config) -> Result<Submenu, Box<dyn std::error::Error>> {
@@ -537,7 +570,7 @@ pub(crate) fn status_label(state: u8) -> &'static str {
         TRANSCRIBING => "Status: Transcribing",
         ANSWERING => "Status: Answering",
         SPEAKING => "Status: Speaking",
-        NOTICE => "Status: Needs Input/Access/Mic",
+        NOTICE => "Status: Permission needed; see log",
         ERROR => "Status: Error; see log",
         BACKEND_DOWN => "Status: Backend stopped; quit and reopen Yappr",
         SETUP_FAILED => "Status: Setup failed; reopen Yappr to resume",

@@ -142,10 +142,20 @@ impl PermissionReport {
 
 pub fn report() -> PermissionReport {
     PermissionReport {
+        microphone_device: macos::microphone_device(()),
+        ..grants()
+    }
+}
+
+/// The three TCC grants without the device description. Cheap: three status
+/// syscalls, no CoreAudio. `report()` additionally queries the input device,
+/// which can take up to a timeout, so anything on the UI thread wants this.
+pub fn grants() -> PermissionReport {
+    PermissionReport {
         input_monitoring: input_monitoring_status().to_string(),
         accessibility: accessibility_status().to_string(),
         microphone: microphone_authorization().to_string(),
-        microphone_device: macos::microphone_device(()),
+        microphone_device: String::new(),
     }
 }
 
@@ -165,6 +175,21 @@ mod tests {
             microphone: mic.to_string(),
             microphone_device: "available (Mic; F32, 1 ch, 48000 Hz)".to_string(),
         }
+    }
+
+    #[test]
+    fn only_the_actually_missing_permission_is_named() {
+        // The real case from a user's machine: mic authorized, the other two not.
+        // The tray used to say "Needs Input/Access/Mic" regardless, sending them
+        // to re-grant a Microphone permission that was already fine.
+        let report = PermissionReport {
+            input_monitoring: "denied".to_string(),
+            accessibility: "not granted".to_string(),
+            microphone: "authorized".to_string(),
+            microphone_device: String::new(),
+        };
+        assert_eq!(report.missing(), vec!["Input Monitoring", "Accessibility"]);
+        assert!(!report.missing().contains(&"Microphone"));
     }
 
     #[test]
