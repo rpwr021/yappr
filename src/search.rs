@@ -9,6 +9,19 @@ const UA: &str =
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) yappr";
 const AVAILABILITY_TTL: Duration = Duration::from_secs(60);
 
+/// How many top results to fetch full text for, and how much text to keep from
+/// each. Snippets alone are often just a site description ("real-time price,
+/// chart, key statistics"), which names the page without containing the answer,
+/// so the model had nothing to work from and told the user to go look. Fetching a
+/// couple of pages gives it the actual figures.
+///
+/// Two pages keeps the added latency to roughly a second on a spoken turn, and
+/// 1200 characters is enough for the lead paragraph or quote block where a
+/// current value normally sits.
+const FETCH_TOP_N: usize = 2;
+const FETCH_CHARS: usize = 1200;
+const FETCH_TIMEOUT: Duration = Duration::from_secs(6);
+
 // Cache the reachability probe so we don't pay timeout latency on every spoken
 // question. Refreshed at most once per AVAILABILITY_TTL.
 static AVAILABILITY: Mutex<Option<(Instant, bool)>> = Mutex::new(None);
@@ -61,7 +74,7 @@ impl WebSearchOutput {
         rank_evidence(&mut results);
         let result_count = results.len().min(max_results);
         Self {
-            content: format_results(results, max_results),
+            content: format_results_with_pages(results, max_results),
             result_count,
             backend,
         }
@@ -258,25 +271,132 @@ fn decode_entities(s: &str) -> String {
         .replace("&#39;", "'")
 }
 
-fn format_results(results: Vec<Hit>, max_results: usize) -> String {
-    results
-        .into_iter()
-        .take(max_results)
+/// Format results, fetching page text for the top few.
+///
+/// A snippet is often the site's own description rather than its content, so on
+/// its own it names the page without answering the question. Fetching the top
+/// results in parallel adds their lead text as `Page text:`.
+fn format_results_with_pages(results: Vec<Hit>, max_results: usize) -> String {
+    let kept: Vec<Hit> = results.into_iter().take(max_results).collect();
+    // Fetch concurrently so total latency is the slowest page, not their sum.
+    let fetched: Vec<Option<String>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = kept
+            .iter()
+            .take(FETCH_TOP_N)
+            .map(|hit| {
+                let url = hit.url.clone();
+                scope.spawn(move || fetch_page_text(&url))
+            })
+            .collect();
+        handles.into_iter().map(|h| h.join().ok().flatten()).collect()
+    });
+    kept.into_iter()
         .enumerate()
         .map(|(index, hit)| {
-            let mut fields = vec![
-                format!("SEARCH RESULT {}", index + 1),
-                format!("Title: {}", hit.title),
-                format!("Source: {}", source_domain(&hit.url)),
-            ];
-            if let Some(published) = hit.published.filter(|value| !value.trim().is_empty()) {
-                fields.push(format!("Published: {published}"));
-            }
-            fields.push(format!("Summary: {}", truncate(&hit.snippet, 360)));
-            fields.join("\n")
+            let page = fetched.get(index).cloned().flatten();
+            format_hit(index, hit, page)
         })
         .collect::<Vec<_>>()
         .join("\n\n")
+}
+
+/// Download a page and reduce it to readable text.
+///
+/// Best-effort: any failure returns None and the caller falls back to the
+/// snippet. Plenty of sites reject a non-browser client (MarketWatch answers 401),
+/// so a miss here is normal rather than an error worth surfacing.
+fn fetch_page_text(url: &str) -> Option<String> {
+    let response = client(FETCH_TIMEOUT.as_secs())
+        .ok()?
+        .get(url)
+        .send()
+        .ok()?
+        .error_for_status()
+        .ok()?;
+    // Skip PDFs and other binaries; only markup is worth stripping.
+    let is_html = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.contains("html"));
+    if !is_html {
+        return None;
+    }
+    let body = response.text().ok()?;
+    let text = html_to_text(&body);
+    (text.len() > 80).then(|| truncate(&text, FETCH_CHARS))
+}
+
+/// Strip markup to plain text: drop non-content elements, remove tags, collapse
+/// whitespace, and decode the handful of entities that survive that.
+fn html_to_text(html: &str) -> String {
+    let mut out = String::with_capacity(html.len() / 4);
+    let mut chars = html.char_indices().peekable();
+    let mut skip_until: Option<&str> = None;
+    while let Some((i, ch)) = chars.next() {
+        if let Some(close) = skip_until {
+            // Inside script/style/etc: resume only after the matching close tag.
+            if ch == '<' && html[i..].to_ascii_lowercase().starts_with(close) {
+                skip_until = None;
+                for _ in 0..close.len().saturating_sub(1) {
+                    chars.next();
+                }
+            }
+            continue;
+        }
+        if ch == '<' {
+            let rest = html[i..].to_ascii_lowercase();
+            for (open, close) in [
+                ("<script", "</script"),
+                ("<style", "</style"),
+                ("<noscript", "</noscript"),
+                ("<svg", "</svg"),
+                ("<head", "</head"),
+            ] {
+                if rest.starts_with(open) {
+                    skip_until = Some(close);
+                    break;
+                }
+            }
+            if skip_until.is_some() {
+                continue;
+            }
+            // Skip the tag itself, emitting a space so words don't run together.
+            for (_, c) in chars.by_ref() {
+                if c == '>' {
+                    break;
+                }
+            }
+            out.push(' ');
+            continue;
+        }
+        out.push(ch);
+    }
+    let decoded = out
+        .replace("&nbsp;", " ")
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&apos;", "'");
+    decoded.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn format_hit(index: usize, hit: Hit, page: Option<String>) -> String {
+    let mut fields = vec![
+        format!("SEARCH RESULT {}", index + 1),
+        format!("Title: {}", hit.title),
+        format!("Source: {}", source_domain(&hit.url)),
+    ];
+    if let Some(published) = hit.published.filter(|value| !value.trim().is_empty()) {
+        fields.push(format!("Published: {published}"));
+    }
+    fields.push(format!("Summary: {}", truncate(&hit.snippet, 360)));
+    if let Some(page) = page {
+        fields.push(format!("Page text: {page}"));
+    }
+    fields.join("\n")
 }
 
 fn source_domain(url: &str) -> String {
@@ -312,7 +432,7 @@ struct SearchResult {
 #[cfg(test)]
 mod tests {
     use super::{
-        available, format_results, parse_ddg_lite, rank_evidence, source_domain, strip_tags,
+        available, format_hit, html_to_text, parse_ddg_lite, rank_evidence, source_domain, strip_tags,
         truncate, Hit, SearchConfig,
     };
 
@@ -348,19 +468,55 @@ mod tests {
 
     #[test]
     fn formats_search_evidence_without_raw_links() {
-        let text = format_results(
-            vec![Hit {
-                title: "A concrete development".to_string(),
-                snippet: "Officials announced the change on Friday.".to_string(),
-                url: "https://www.reuters.com/world/example".to_string(),
-                published: Some("2026-07-10T10:30:00Z".to_string()),
-            }],
-            5,
-        );
+        let hit = Hit {
+            title: "A concrete development".to_string(),
+            snippet: "Officials announced the change on Friday.".to_string(),
+            url: "https://www.reuters.com/world/example".to_string(),
+            published: Some("2026-07-10T10:30:00Z".to_string()),
+        };
+        let text = format_hit(0, hit, None);
         assert!(text.contains("SEARCH RESULT 1"));
         assert!(text.contains("Source: reuters.com"));
         assert!(text.contains("Published: 2026-07-10"));
+        // The answer is read aloud, so a URL in the evidence can be spoken back.
         assert!(!text.contains("https://"));
+    }
+
+    #[test]
+    fn page_text_is_included_when_a_fetch_succeeds() {
+        // The fix for snippets that describe a page without answering the
+        // question: the fetched body is what carries the actual figure.
+        let hit = Hit {
+            title: "NVIDIA (NVDA) Stock Price".to_string(),
+            snippet: "real-time price, chart, key statistics, news, and more.".to_string(),
+            url: "https://stockanalysis.com/stocks/nvda/".to_string(),
+            published: None,
+        };
+        let text = format_hit(0, hit, Some("NVDA closed at $215.94, up 1.2%.".to_string()));
+        assert!(text.contains("Page text: NVDA closed at $215.94"));
+        assert!(!text.contains("https://"));
+    }
+
+    #[test]
+    fn html_to_text_drops_scripts_and_collapses_whitespace() {
+        let html = "<html><head><title>t</title></head><body>\n  <script>var x = 1 < 2;</script>\n  <p>Price is <b>$215.94</b>&nbsp;today</p>\n  <style>.a{color:red}</style>\n</body></html>";
+        let text = html_to_text(html);
+        // Script and style bodies must not leak in as prose.
+        assert!(!text.contains("var x"), "script body leaked: {text}");
+        assert!(!text.contains("color:red"), "style body leaked: {text}");
+        assert!(text.contains("Price is"));
+        assert!(text.contains("$215.94"));
+        // Entities decoded and runs of whitespace collapsed.
+        assert!(text.contains("today"));
+        assert!(!text.contains("&nbsp;"));
+        assert!(!text.contains("  "), "whitespace not collapsed: {text}");
+    }
+
+    #[test]
+    fn html_to_text_keeps_word_boundaries_across_tags() {
+        // Tags become spaces, so adjacent words must not merge.
+        let text = html_to_text("<p>first</p><p>second</p>");
+        assert!(text.contains("first second"), "got {text}");
     }
 
     #[test]

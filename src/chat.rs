@@ -77,10 +77,13 @@ impl ChatClient {
             let rewritten = self.rewrite_search_query(question);
             let used_e2b = rewritten.is_some();
             let query = rewritten.unwrap_or(fallback);
+            // Name the query, not just which mechanism produced it. Logging the
+            // bare word "E2B" next to `web_search: <query>` read as if the query
+            // itself were "E2B".
             crate::logger::debug_line(format!(
-                "web_search query rewrite: {}",
+                "web_search query rewrite: {query:?} (via {})",
                 if used_e2b {
-                    "E2B"
+                    "model"
                 } else {
                     "deterministic fallback"
                 }
@@ -586,6 +589,12 @@ fn clean_spoken_text(text: &str) -> String {
         .join(" ")
 }
 
+/// Whether a synthesised answer dodged the question instead of using the evidence.
+///
+/// Phrase matching is a backstop, not the fix: it only catches wordings we thought
+/// to list, and the model can decline in endlessly many ways. The real remedy is
+/// giving it page text to work from (see `fetch_page_text`), so this list exists
+/// to catch the residue when a fetch fails or the page has nothing useful.
 fn search_answer_needs_retry(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
     [

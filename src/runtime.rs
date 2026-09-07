@@ -235,6 +235,10 @@ impl Runtime {
     /// destructors, so without this the backend (and its loaded model) would
     /// survive in memory after quit. Dropping the ManagedServer kills the child.
     pub fn shutdown(&self) {
+        // Silence any in-progress answer first. `say` and `afplay` are separate
+        // processes, so quitting mid-sentence used to leave one talking with no
+        // app left to stop it.
+        speech::stop();
         // Recover from poisoning rather than skipping the kill: a panic elsewhere
         // must not silently leak a multi-GB backend. The slot holds an Option, so
         // there is no torn state to worry about.

@@ -239,9 +239,12 @@ fn speech_path() -> std::path::PathBuf {
 }
 
 fn play_wav(path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
-    let status = Command::new("/usr/bin/afplay").arg(path).status()?;
+    let status = Command::new("/usr/bin/afplay").arg(path).status();
+    // Remove the temp wav whether or not playback succeeded. `stop()` kills
+    // afplay mid-sentence, and without this each interrupted answer left a file
+    // behind in the temp directory.
     let _ = std::fs::remove_file(path);
-    if !status.success() {
+    if !status?.success() {
         return Err("audio playback failed".into());
     }
     Ok(())
