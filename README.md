@@ -49,11 +49,13 @@ launch it again. To inspect the effective config without launching the UI:
 
 - Hold `Right Option` to dictate.
 - Hold `Cmd + Right Option` to chat.
-- Use the menu-bar icon to change microphone, model, language, speech output, or quit.
+- Use the menu-bar icon to change microphone, model, language, or answer voice.
 
 The menu-bar icon is a duck that reflects state (idle, listening, transcribing,
-downloading). macOS decides menu-bar ordering and hides overflow items when the
-bar is full (notably on notched MacBooks) — if you don't see the icon,
+downloading). It also shows failures: a missing permission names which one in the
+status line, and if the model server stops answering the icon says so instead of
+continuing to look ready. macOS decides menu-bar ordering and hides overflow items when the
+bar is full (notably on notched MacBooks). If you don't see the icon,
 ⌘-drag to reorder it, or use a manager like Ice/Bartender to keep it visible.
 
 On first launch Yappr downloads the model (several GB); the icon shows
@@ -121,6 +123,9 @@ Logs:
 tail -f ~/.yappr/yappr.log
 ```
 
+The Logs row in the menu reveals the file in Finder. The log rotates to
+`yappr.log.1` once it passes 1 MB, so it keeps at most two files.
+
 Disable logs with:
 
 ```ini
@@ -131,11 +136,23 @@ enabled = false
 ## Development
 
 ```bash
-./scripts/make_cert.sh
-./scripts/run.sh --build
+./scripts/make_cert.sh      # once: stable signing identity
+./scripts/run.sh --build    # build, install to /Applications, launch
 cargo test
 cargo clippy --all-targets -- -D warnings
 ```
+
+`make_cert.sh` creates the "Yappr Self-Signed" identity once so rebuilds keep a
+constant signature and macOS keeps your Input Monitoring and Accessibility
+grants. Without it `build_app.sh` falls back to ad-hoc signing, whose signature
+changes on every rebuild, and the grants are dropped each time. If two
+certificates end up sharing that name, `codesign` refuses the ambiguous name;
+`build_app.sh` selects by SHA-1 hash to avoid this.
+
+`run.sh` builds into `dist/`, copies the bundle to `/Applications/Yappr.app`,
+then deletes the staging copy. macOS tracks Accessibility and Input Monitoring
+per bundle path, so leaving two copies produces two entries in System Settings
+and a second launchable app with its own grants.
 
 GitHub Actions creates a new `v0.1.<run_number>` release on every `main` push.
 Explicit `v*` tags produce releases with that exact version.

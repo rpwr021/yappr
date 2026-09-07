@@ -115,7 +115,7 @@ Transcription source/target languages.
 | Key | Default | Description |
 | --- | --- | --- |
 | `source` | `auto` | Spoken language; `auto` detects it. |
-| `target` | `auto` | Output language; `auto` keeps the source language, otherwise translates. Set from the menu-bar Output Language submenu. |
+| `target` | `auto` | Output language; `auto` keeps the source language, otherwise translates. Set from the menu-bar Output Language submenu. Only affects chat answers, so the submenu is disabled in Dictation Only mode. |
 | `options` | `auto,English,Spanish,French,German,Hindi,Japanese,Chinese,Portuguese,Italian` | Languages listed in the menu. |
 
 ## `[chat]`
@@ -128,9 +128,12 @@ Voice-chat behavior.
 
 ## `[speech]`
 
-Text-to-speech for spoken answers. The menu exposes macOS Voice (`say`) and
-Kokoro. If Kokoro fails to initialize (e.g. its model files are missing), Yappr
-logs the failure and falls back to `say`.
+Text-to-speech for spoken answers. The Answer Voice menu lists macOS voices and
+Kokoro speakers, the latter grouped by locale. Picking a voice also selects its
+engine, so there is no separate backend list. If Kokoro fails to initialize (e.g.
+its model files are missing), Yappr logs the failure and falls back to `say`.
+
+Answer Voice is disabled in Dictation Only mode, which never speaks.
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -178,3 +181,36 @@ Tail the log:
 ```bash
 tail -f ~/.yappr/yappr.log
 ```
+
+The Logs row in the menu reveals the file in Finder. `llama-server` writes its
+own output to `/tmp/yappr-llama-server.log`, which is separate and not rotated.
+
+## Diagnostics
+
+`--check` prints the effective config and probes what it can:
+
+```bash
+/Applications/Yappr.app/Contents/MacOS/Yappr --check; echo $?
+```
+
+It exits non-zero if a probe fails and ends with a summary, so it works as a
+health check. Failures are things that will not work: a missing permission, a
+missing `llama-server` binary, an unwritable log path, absent model files, or a
+different model already serving the configured port. Warnings are for degraded
+but working states: a configured microphone that is unplugged (recording falls
+back to the system default) and an unreachable SearXNG endpoint (search falls
+back to DuckDuckGo).
+
+Run it from the installed bundle rather than a `cargo build` binary. macOS scopes
+permission grants per executable, so a locally built binary reports its own
+permissions, not the app's.
+
+To check capture separately:
+
+```bash
+/Applications/Yappr.app/Contents/MacOS/Yappr --record-test --seconds 3
+```
+
+This records from the configured device and reports `peak` and
+`nonzero_samples`. A peak near zero means no audio arrived, which usually points
+at the Microphone permission rather than the device.
