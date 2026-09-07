@@ -5,6 +5,8 @@ use std::path::PathBuf;
 
 #[derive(Clone, Debug)]
 pub struct Config {
+    pub mode: ModeConfig,
+    pub asr: AsrConfig,
     pub server: ServerConfig,
     pub model: ModelConfig,
     pub audio: AudioConfig,
@@ -14,6 +16,27 @@ pub struct Config {
     pub speech: SpeechConfig,
     pub logging: LoggingConfig,
     pub search: SearchConfig,
+}
+
+#[derive(Clone, Debug)]
+pub struct ModeConfig {
+    pub tier: String,
+}
+
+impl ModeConfig {
+    /// GPU-poor tier: on-device ASR only, no llama-server, no chat.
+    pub fn is_poor(&self) -> bool {
+        self.tier == "poor"
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct AsrConfig {
+    pub repo: String,
+    pub release: String,
+    pub archive: String,
+    /// Local directory the archive extracts to, e.g. ~/.yappr/models/<archive>.
+    pub model_dir: String,
 }
 
 #[derive(Clone, Debug)]
@@ -148,6 +171,22 @@ impl Config {
         let model_section = format!("model:{active_model}");
 
         Self {
+            mode: ModeConfig {
+                tier: ini.get("mode", "tier", "rich"),
+            },
+            asr: {
+                let archive = ini.get(
+                    "asr",
+                    "archive",
+                    "sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-560ms-int8-2026-06-11",
+                );
+                AsrConfig {
+                    repo: ini.get("asr", "repo", "k2-fsa/sherpa-onnx"),
+                    release: ini.get("asr", "release", "asr-models"),
+                    model_dir: format!("~/.yappr/models/{archive}"),
+                    archive,
+                }
+            },
             server: ServerConfig {
                 endpoint: ini.get(
                     "server",
@@ -482,6 +521,14 @@ mod tests {
     }
 
     #[test]
+    fn default_model_menu_only_includes_e2b() {
+        let cfg = config_from("");
+        assert_eq!(cfg.model.active, "e2b-qat");
+        assert_eq!(cfg.model.choices.len(), 1);
+        assert_eq!(cfg.model.choices[0].id, "e2b-qat");
+    }
+
+    #[test]
     fn migrates_old_e4b_default_to_e2b() {
         let mut ini = Ini::default();
         ini.merge(
@@ -718,6 +765,34 @@ mod tests {
     }
 
     #[test]
+    fn parses_mode_and_asr_config() {
+        let cfg = config_from(
+            r#"
+            [mode]
+            tier = poor
+
+            [asr]
+            repo = my/repo
+            release = my-models
+            archive = my-asr-archive
+            "#,
+        );
+
+        assert!(cfg.mode.is_poor());
+        assert_eq!(cfg.asr.repo, "my/repo");
+        assert_eq!(cfg.asr.release, "my-models");
+        assert_eq!(cfg.asr.archive, "my-asr-archive");
+        assert_eq!(cfg.asr.model_dir, "~/.yappr/models/my-asr-archive");
+    }
+
+    #[test]
+    fn defaults_to_rich_tier() {
+        let cfg = config_from("");
+        assert_eq!(cfg.mode.tier, "rich");
+        assert!(!cfg.mode.is_poor());
+    }
+
+    #[test]
     fn parses_vad_config() {
         let cfg = config_from(
             r#"
@@ -776,9 +851,13 @@ mod tests {
         let cfg = config_from(
             r#"
             [models]
-            active = e4b-qat
+            active = custom-audio
 
-            [model:e4b-qat]
+            [model:custom-audio]
+            label = Custom Audio Model
+            repo = example/custom-audio-model
+            weights = custom-audio-model.gguf
+            mmproj = custom-audio-mmproj.gguf
             ctx_size = 16384
             ngl = 12
 
@@ -794,7 +873,10 @@ mod tests {
             "#,
         );
 
-        assert_eq!(cfg.model.active, "e4b-qat");
+        assert_eq!(cfg.model.active, "custom-audio");
+        assert_eq!(cfg.model.repo, "example/custom-audio-model");
+        assert_eq!(cfg.model.weights, "custom-audio-model.gguf");
+        assert_eq!(cfg.model.mmproj, "custom-audio-mmproj.gguf");
         assert_eq!(cfg.model.ctx_size, "16384");
         assert_eq!(cfg.model.ngl, "12");
         assert_eq!(

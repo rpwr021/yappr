@@ -1,4 +1,5 @@
 mod app;
+mod asr;
 mod audio;
 mod chat;
 mod config;
@@ -7,6 +8,8 @@ mod inject;
 mod instance;
 mod logger;
 mod mascot;
+#[cfg(target_os = "macos")]
+mod mode_switch;
 mod perms;
 mod runtime;
 mod search;

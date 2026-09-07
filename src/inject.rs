@@ -14,7 +14,11 @@ pub fn paste_text(text: &str) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 pub fn copy_text(text: &str) -> Result<(), Box<dyn std::error::Error>> {
+    // pbcopy picks its input encoding from LANG/LC_CTYPE and falls back to Mac
+    // Roman when unset (as it is for a GUI app launched via `open`), which
+    // mangles UTF-8 multibyte text like Devanagari. Force UTF-8 explicitly.
     let mut pbcopy = Command::new("/usr/bin/pbcopy")
+        .env("LANG", "en_US.UTF-8")
         .stdin(Stdio::piped())
         .spawn()?;
     pbcopy

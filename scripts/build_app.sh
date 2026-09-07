@@ -21,22 +21,33 @@ if [ -n "${YAPPR_BUILD:-}" ]; then
 fi
 
 SIGN_IDENTITY="${YAPPR_CODESIGN_IDENTITY:-}"
+# Select by SHA-1 hash, not by name. Duplicate certificates can share the common
+# name ("Yappr Self-Signed" imported twice, only one with a private key), and
+# codesign then refuses with "ambiguous (matches ...)". find-identity -p
+# codesigning only lists identities that have a usable private key, so the first
+# hash it reports is the one that can actually sign.
 if [ -z "$SIGN_IDENTITY" ]; then
   SIGN_IDENTITY="$(security find-identity -v -p codesigning \
-    ~/Library/Keychains/login.keychain-db 2>/dev/null | awk -F '"' '/Yappr Self-Signed/{print $2; exit}' || true)"
+    ~/Library/Keychains/login.keychain-db 2>/dev/null \
+    | awk '/Yappr Self-Signed/{print $2; exit}' || true)"
 fi
 if [ -z "$SIGN_IDENTITY" ]; then
-  SIGN_IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null | awk -F '"' '/\\)/{print $2; exit}' || true)"
+  SIGN_IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null \
+    | awk '/^ *[0-9]+\)/{print $2; exit}' || true)"
 fi
 
 if [ -n "${SIGN_IDENTITY:-}" ]; then
   codesign --force --options runtime --entitlements resources/Entitlements.plist --sign "$SIGN_IDENTITY" "$APP"
-  echo "signed with identity: $SIGN_IDENTITY"
+  echo "signed with stable identity: $SIGN_IDENTITY"
 else
   codesign --force --entitlements resources/Entitlements.plist --sign - "$APP"
-  echo "WARN: 'Yappr Self-Signed' cert not found; used ad-hoc signing."
+  echo "WARN: no stable code-signing identity found; used ad-hoc signing."
+  echo "      Ad-hoc signatures change every rebuild, so macOS will KEEP"
+  echo "      dropping the Microphone / Input Monitoring grants. Fix once with:"
+  echo "          ./scripts/make_signing_identity.sh"
 fi
 
-echo "Built $APP"
+echo "Built $APP (staging copy)"
 echo "Diagnostics: $APP/Contents/MacOS/Yappr --check"
-echo "Not installed. Use ./scripts/run.sh --build to install /Applications/Yappr.app and launch it."
+echo "Not installed. Use ./scripts/run.sh to install /Applications/Yappr.app and launch it;"
+echo "that also removes this staging copy, so only one bundle holds permissions."

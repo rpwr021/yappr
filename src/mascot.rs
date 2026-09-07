@@ -4,11 +4,17 @@ use std::sync::OnceLock;
 use tray_icon::Icon;
 
 use crate::ui::{
-    ANSWERING, ERROR, NOTICE, PROVISIONING_ENGINE, PROVISIONING_MODEL, RECORDING_CHAT,
-    RECORDING_DICTATE, SPEAKING, STARTING, TRANSCRIBING,
+    ANSWERING, BACKEND_DOWN, ERROR, NOTICE, PROVISIONING_ENGINE, PROVISIONING_MODEL,
+    RECORDING_CHAT, RECORDING_DICTATE, SETUP_FAILED, SPEAKING, STARTING, TRANSCRIBING,
 };
 
-const ICON_SIZE: usize = 32;
+/// Canvas size for the rendered tray icon, in pixels.
+///
+/// tray-icon displays the image at a hardcoded 18pt height, so on a 2x Retina
+/// display the slot is 36 physical pixels. Rendering at 32 meant AppKit *upscaled*
+/// by 1.125 — a non-integer factor that blurred the result and undid the
+/// box-filter downscale below. Matching 36 keeps our resampling the only one.
+const ICON_SIZE: usize = 36;
 
 const IDLE_ICON: &[u8] = include_bytes!("../resources/assets/logos/yappr-logo-01-idle.png");
 const CHAT_ICON: &[u8] =
@@ -29,34 +35,50 @@ const DICTATE_FRAMES: [&[u8]; 4] = [
 ];
 
 pub fn icon_for_state(state: u8, frame: usize) -> Result<Icon, Box<dyn std::error::Error>> {
-    let png = match state {
+    let png = png_for_state_frame(state, frame);
+    let rgba = decode_icon(png, shared_crop())?;
+    Icon::from_rgba(rgba, ICON_SIZE as u32, ICON_SIZE as u32).map_err(Into::into)
+}
+
+fn png_for_state_frame(state: u8, frame: usize) -> &'static [u8] {
+    match state {
         RECORDING_DICTATE => DICTATE_FRAMES[frame % DICTATE_FRAMES.len()],
         RECORDING_CHAT => CHAT_ICON,
         TRANSCRIBING => TRANSCRIBING_ICON,
         ANSWERING => ANSWERING_ICON,
         SPEAKING => SPEAKING_ICON,
         ERROR => ERROR_ICON,
-        NOTICE => IDLE_ICON,
+        // Failure states share the error art. NOTICE used to render IDLE_ICON,
+        // which made a blocked app look healthy in the menu bar: the only signal
+        // that hotkeys were dead was a status line you had to open the menu to see.
+        BACKEND_DOWN | SETUP_FAILED | NOTICE => ERROR_ICON,
         PROVISIONING_MODEL | PROVISIONING_ENGINE | STARTING => TRANSCRIBING_ICON,
         _ => IDLE_ICON,
-    };
-    // Dictate frames share one crop box so the head stays put while the mouth
-    // and sound dots animate; other states crop to their own content.
-    let crop = if state == RECORDING_DICTATE {
-        Some(dictate_crop())
-    } else {
-        None
-    };
-    let rgba = decode_icon(png, crop)?;
-    Icon::from_rgba(rgba, ICON_SIZE as u32, ICON_SIZE as u32).map_err(Into::into)
+    }
 }
 
-/// Union of the content bounds across all dictate frames, computed once.
-fn dictate_crop() -> Rect {
+/// Every icon, so the shared crop covers all of them.
+const ALL_ICONS: [&[u8]; 6] = [
+    IDLE_ICON,
+    CHAT_ICON,
+    TRANSCRIBING_ICON,
+    ANSWERING_ICON,
+    SPEAKING_ICON,
+    ERROR_ICON,
+];
+
+/// One crop box covering the visible content of every icon, computed once.
+///
+/// Each asset used to be cropped to its own alpha bounds and scaled to fill the
+/// canvas. Since those bounds differ (371x441 to 475x472 across the set), the
+/// mascot changed size and shifted position on every state change — a visible
+/// twitch in the menu bar. A shared box keeps it planted.
+fn shared_crop() -> Rect {
     static CROP: OnceLock<Rect> = OnceLock::new();
     *CROP.get_or_init(|| {
-        DICTATE_FRAMES
+        ALL_ICONS
             .iter()
+            .chain(DICTATE_FRAMES.iter())
             .filter_map(|png| decode_rgba(png).ok())
             .map(|img| content_bounds(&img.pixels, img.width, img.height))
             .reduce(|a, b| a.union(b))
@@ -126,14 +148,11 @@ fn decode_rgba(bytes: &[u8]) -> Result<Rgba, Box<dyn std::error::Error>> {
     })
 }
 
-/// Crop the icon to visible content so it fills the menu-bar canvas instead of
-/// the source's transparent padding, then scale that region to `ICON_SIZE`.
-/// `crop` overrides the per-image content bounds (used to share one box across
-/// animation frames).
-fn decode_icon(bytes: &[u8], crop: Option<Rect>) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+/// Crop to `crop` so the icon fills the menu-bar canvas instead of the source's
+/// transparent padding, then scale that region to `ICON_SIZE`.
+fn decode_icon(bytes: &[u8], crop: Rect) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let img = decode_rgba(bytes)?;
-    let bounds = crop.unwrap_or_else(|| content_bounds(&img.pixels, img.width, img.height));
-    Ok(scale_region(&img, bounds, ICON_SIZE))
+    Ok(scale_region(&img, crop, ICON_SIZE))
 }
 
 /// Bounding box of pixels with alpha above a small threshold (keeps soft halos).
@@ -168,8 +187,13 @@ fn content_bounds(pixels: &[u8], width: usize, height: usize) -> Rect {
     }
 }
 
-/// Nearest-neighbour scale of `rect` within `img` into a centred `size`x`size`
+/// Box-filter scale of `rect` within `img` into a centred `size`x`size`
 /// transparent canvas, preserving aspect ratio.
+///
+/// Averages every source pixel that maps to a destination pixel rather than point
+/// sampling one of them. The art is 512x512 going into 36x36, so nearest-neighbour
+/// kept 1 pixel in 200 and aliased every edge. Colour is weighted by alpha
+/// (premultiplied) so transparent pixels don't drag a dark halo into the edges.
 fn scale_region(img: &Rgba, rect: Rect, size: usize) -> Vec<u8> {
     let mut out = vec![0; size * size * 4];
     let scale = (size as f32 / rect.w.max(rect.h) as f32).max(f32::MIN_POSITIVE);
@@ -178,12 +202,40 @@ fn scale_region(img: &Rgba, rect: Rect, size: usize) -> Vec<u8> {
     let off_x = (size - dw) / 2;
     let off_y = (size - dh) / 2;
     for y in 0..dh {
-        let sy = rect.y + y * rect.h / dh;
+        // Source rows covered by this destination row, always at least one.
+        let sy0 = rect.y + y * rect.h / dh;
+        let sy1 = (rect.y + (y + 1) * rect.h / dh).max(sy0 + 1).min(img.height);
         for x in 0..dw {
-            let sx = rect.x + x * rect.w / dw;
-            let src_i = (sy * img.width + sx) * 4;
+            let sx0 = rect.x + x * rect.w / dw;
+            let sx1 = (rect.x + (x + 1) * rect.w / dw).max(sx0 + 1).min(img.width);
+            let (mut r, mut g, mut b, mut a) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
+            let mut count = 0.0f32;
+            for sy in sy0..sy1 {
+                for sx in sx0..sx1 {
+                    let i = (sy * img.width + sx) * 4;
+                    let alpha = img.pixels[i + 3] as f32 / 255.0;
+                    r += img.pixels[i] as f32 * alpha;
+                    g += img.pixels[i + 1] as f32 * alpha;
+                    b += img.pixels[i + 2] as f32 * alpha;
+                    a += alpha;
+                    count += 1.0;
+                }
+            }
+            if count == 0.0 {
+                continue;
+            }
             let dst_i = ((y + off_y) * size + (x + off_x)) * 4;
-            out[dst_i..dst_i + 4].copy_from_slice(&img.pixels[src_i..src_i + 4]);
+            // Un-premultiply: divide colour by summed alpha, not by pixel count,
+            // so a mostly-transparent region keeps its true hue.
+            let (dr, dg, db) = if a > 0.0 {
+                (r / a, g / a, b / a)
+            } else {
+                (0.0, 0.0, 0.0)
+            };
+            out[dst_i] = dr.round().clamp(0.0, 255.0) as u8;
+            out[dst_i + 1] = dg.round().clamp(0.0, 255.0) as u8;
+            out[dst_i + 2] = db.round().clamp(0.0, 255.0) as u8;
+            out[dst_i + 3] = (a / count * 255.0).round().clamp(0.0, 255.0) as u8;
         }
     }
     out
@@ -192,10 +244,12 @@ fn scale_region(img: &Rgba, rect: Rect, size: usize) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::{
-        content_bounds, icon_for_state, is_animated, scale_region, Rect, Rgba, DICTATE_FRAMES,
-        ICON_SIZE,
+        content_bounds, decode_rgba, icon_for_state, is_animated, png_for_state_frame, scale_region,
+        shared_crop, Rect, Rgba, DICTATE_FRAMES, ICON_SIZE,
     };
-    use crate::ui::{ERROR, IDLE, NOTICE, RECORDING_CHAT, RECORDING_DICTATE, TRANSCRIBING};
+    use crate::ui::{
+        BACKEND_DOWN, ERROR, IDLE, NOTICE, RECORDING_CHAT, RECORDING_DICTATE, TRANSCRIBING,
+    };
 
     #[test]
     fn only_dictate_animates() {
@@ -217,6 +271,62 @@ mod tests {
     fn static_states_decode() {
         assert!(icon_for_state(IDLE, 0).is_ok());
         assert!(icon_for_state(TRANSCRIBING, 7).is_ok());
+        assert!(icon_for_state(BACKEND_DOWN, 0).is_ok());
+    }
+
+    #[test]
+    fn canvas_matches_the_retina_menu_bar_slot() {
+        // tray-icon renders at a hardcoded 18pt height, so a 2x display needs 36
+        // physical pixels. Any other value makes AppKit rescale by a non-integer
+        // factor and blur away the box filter below.
+        assert_eq!(ICON_SIZE, 36, "must equal 18pt at 2x");
+    }
+
+    #[test]
+    fn all_states_share_one_crop_so_the_icon_does_not_jump() {
+        // Per-image crops ranged from 371x441 to 476x474 and each was scaled to
+        // fill the canvas, so the mascot resized and shifted on every state change.
+        let crop = shared_crop();
+        for state in [IDLE, ERROR, RECORDING_CHAT, TRANSCRIBING, NOTICE] {
+            let img = decode_rgba(png_for_state_frame(state, 0)).expect("decodes");
+            let own = content_bounds(&img.pixels, img.width, img.height);
+            // The shared box must contain every icon's own content, or art would
+            // be clipped at the edges.
+            assert!(own.x >= crop.x, "state {state} extends left of the crop");
+            assert!(own.y >= crop.y, "state {state} extends above the crop");
+            assert!(
+                own.x + own.w <= crop.x + crop.w,
+                "state {state} extends right of the crop"
+            );
+            assert!(
+                own.y + own.h <= crop.y + crop.h,
+                "state {state} extends below the crop"
+            );
+        }
+    }
+
+    #[test]
+    fn permission_notice_does_not_look_healthy() {
+        // The regression this guards: NOTICE mapped to IDLE_ICON, so an app with
+        // hotkeys disabled was visually identical to a working one.
+        assert!(!std::ptr::eq(
+            png_for_state_frame(NOTICE, 0),
+            png_for_state_frame(IDLE, 0)
+        ));
+    }
+
+    #[test]
+    fn backend_down_does_not_look_healthy() {
+        // NOTICE maps to IDLE_ICON, which is why a missing permission is visually
+        // indistinguishable from Ready. BACKEND_DOWN must not repeat that.
+        assert!(std::ptr::eq(
+            png_for_state_frame(BACKEND_DOWN, 0),
+            png_for_state_frame(ERROR, 0)
+        ));
+        assert!(!std::ptr::eq(
+            png_for_state_frame(BACKEND_DOWN, 0),
+            png_for_state_frame(IDLE, 0)
+        ));
     }
 
     // 4x4 image with a single opaque pixel at (1,2); rest transparent.
@@ -243,6 +353,58 @@ mod tests {
         let pixels = vec![0u8; 2 * 2 * 4];
         let b = content_bounds(&pixels, 2, 2);
         assert_eq!((b.x, b.y, b.w, b.h), (0, 0, 2, 2));
+    }
+
+    #[test]
+    fn scale_region_averages_instead_of_point_sampling() {
+        // 2x2 of four distinct opaque colours reduced to 1x1. Point sampling would
+        // return one of the four verbatim; a box filter returns their mean.
+        let pixels = vec![
+            0, 0, 0, 255, // black
+            255, 0, 0, 255, // red
+            0, 255, 0, 255, // green
+            0, 0, 255, 255, // blue
+        ];
+        let img = Rgba {
+            pixels,
+            width: 2,
+            height: 2,
+        };
+        let rect = Rect {
+            x: 0,
+            y: 0,
+            w: 2,
+            h: 2,
+        };
+        let out = scale_region(&img, rect, 1);
+        // Each channel is present in exactly one of four pixels: 255/4 = 63.75 -> 64.
+        assert_eq!(&out[0..4], &[64, 64, 64, 255]);
+    }
+
+    #[test]
+    fn scale_region_does_not_bleed_transparent_black_into_edges() {
+        // Half opaque red, half fully transparent. Averaging raw RGB would halve
+        // the red and darken it; alpha weighting must keep the hue and halve alpha.
+        let pixels = vec![
+            255, 0, 0, 255, // opaque red
+            0, 0, 0, 0, // transparent
+        ];
+        let img = Rgba {
+            pixels,
+            width: 2,
+            height: 1,
+        };
+        let rect = Rect {
+            x: 0,
+            y: 0,
+            w: 2,
+            h: 1,
+        };
+        let out = scale_region(&img, rect, 1);
+        assert_eq!(out[0], 255, "hue must survive averaging with transparency");
+        assert_eq!(out[1], 0);
+        assert_eq!(out[2], 0);
+        assert_eq!(out[3], 128, "alpha is the mean of 255 and 0");
     }
 
     #[test]

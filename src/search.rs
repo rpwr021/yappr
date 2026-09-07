@@ -34,22 +34,107 @@ pub fn available(cfg: &SearchConfig) -> bool {
     value
 }
 
-pub fn web_search(cfg: &SearchConfig, query: &str) -> String {
+pub fn web_search(cfg: &SearchConfig, query: &str) -> WebSearchOutput {
     match searxng_search(cfg, query) {
-        Ok(results) if !results.is_empty() => return format_results(results, cfg.max_results),
+        Ok(results) if !results.is_empty() => {
+            return WebSearchOutput::success(results, cfg.max_results, "SearXNG")
+        }
         _ => {}
     }
     match ddg_search(cfg, query) {
-        Ok(results) if !results.is_empty() => format_results(results, cfg.max_results),
-        Ok(_) => "web_search returned no results".to_string(),
-        Err(err) => format!("web_search unavailable: {err}"),
+        Ok(results) if !results.is_empty() => {
+            WebSearchOutput::success(results, cfg.max_results, "DuckDuckGo")
+        }
+        Ok(_) => WebSearchOutput::failure("web_search returned no results"),
+        Err(err) => WebSearchOutput::failure(format!("web_search unavailable: {err}")),
     }
+}
+
+pub struct WebSearchOutput {
+    pub content: String,
+    pub result_count: usize,
+    pub backend: &'static str,
+}
+
+impl WebSearchOutput {
+    fn success(mut results: Vec<Hit>, max_results: usize, backend: &'static str) -> Self {
+        rank_evidence(&mut results);
+        let result_count = results.len().min(max_results);
+        Self {
+            content: format_results(results, max_results),
+            result_count,
+            backend,
+        }
+    }
+
+    fn failure(message: impl Into<String>) -> Self {
+        Self {
+            content: message.into(),
+            result_count: 0,
+            backend: "none",
+        }
+    }
+}
+
+/// Search engines often rank topic hubs above individual reports. Spoken
+/// answers need evidence-rich snippets, so prefer results containing recency,
+/// figures, and concrete events while retaining engine order for equal scores.
+fn rank_evidence(results: &mut [Hit]) {
+    results.sort_by_key(|hit| std::cmp::Reverse(evidence_score(hit)));
+}
+
+fn evidence_score(hit: &Hit) -> i32 {
+    let title = hit.title.to_ascii_lowercase();
+    let snippet = hit.snippet.to_ascii_lowercase();
+    let mut score = 0;
+
+    if hit.snippet.chars().count() >= 100 {
+        score += 1;
+    }
+    if hit.snippet.chars().any(|ch| ch.is_ascii_digit()) {
+        score += 2;
+    }
+    if snippet.contains(" ago") || hit.published.is_some() {
+        score += 3;
+    }
+    if [
+        " announced ",
+        " said ",
+        " killed ",
+        " struck ",
+        " strikes ",
+        " launched ",
+        " agreed ",
+        " signed ",
+        " responded ",
+    ]
+    .iter()
+    .any(|term| snippet.contains(term))
+    {
+        score += 3;
+    }
+
+    if [
+        "stay on top of",
+        "real-time coverage",
+        "read full articles",
+        "premier source",
+        "latest news and updates",
+        "breaking news, updates & analysis",
+    ]
+    .iter()
+    .any(|phrase| title.contains(phrase) || snippet.contains(phrase))
+    {
+        score -= 6;
+    }
+    score
 }
 
 struct Hit {
     title: String,
     snippet: String,
     url: String,
+    published: Option<String>,
 }
 
 fn client(timeout_secs: u64) -> Result<Client, reqwest::Error> {
@@ -87,6 +172,7 @@ fn searxng_search(cfg: &SearchConfig, query: &str) -> Result<Vec<Hit>, Box<dyn s
             title: r.title.unwrap_or_default(),
             snippet: r.content.unwrap_or_default(),
             url: r.url.unwrap_or_default(),
+            published: r.published_date,
         })
         .collect())
 }
@@ -123,6 +209,7 @@ fn parse_ddg_lite(html: &str) -> Vec<Hit> {
                 title,
                 snippet,
                 url,
+                published: None,
             });
         }
     }
@@ -175,16 +262,29 @@ fn format_results(results: Vec<Hit>, max_results: usize) -> String {
     results
         .into_iter()
         .take(max_results)
-        .map(|hit| {
-            format!(
-                "- {}: {} ({})",
-                hit.title,
-                truncate(&hit.snippet, 160),
-                hit.url
-            )
+        .enumerate()
+        .map(|(index, hit)| {
+            let mut fields = vec![
+                format!("SEARCH RESULT {}", index + 1),
+                format!("Title: {}", hit.title),
+                format!("Source: {}", source_domain(&hit.url)),
+            ];
+            if let Some(published) = hit.published.filter(|value| !value.trim().is_empty()) {
+                fields.push(format!("Published: {published}"));
+            }
+            fields.push(format!("Summary: {}", truncate(&hit.snippet, 360)));
+            fields.join("\n")
         })
         .collect::<Vec<_>>()
-        .join("\n")
+        .join("\n\n")
+}
+
+fn source_domain(url: &str) -> String {
+    reqwest::Url::parse(url)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_string))
+        .map(|host| host.strip_prefix("www.").unwrap_or(&host).to_string())
+        .unwrap_or_else(|| "unknown source".to_string())
 }
 
 fn truncate(value: &str, max_chars: usize) -> String {
@@ -205,11 +305,16 @@ struct SearchResult {
     title: Option<String>,
     content: Option<String>,
     url: Option<String>,
+    #[serde(default, rename = "publishedDate", alias = "published_date")]
+    published_date: Option<String>,
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{available, parse_ddg_lite, strip_tags, truncate, SearchConfig};
+    use super::{
+        available, format_results, parse_ddg_lite, rank_evidence, source_domain, strip_tags,
+        truncate, Hit, SearchConfig,
+    };
 
     #[test]
     fn unavailable_when_search_disabled() {
@@ -239,6 +344,53 @@ mod tests {
     #[test]
     fn leaves_short_search_snippets_unchanged() {
         assert_eq!(truncate("abc", 3), "abc");
+    }
+
+    #[test]
+    fn formats_search_evidence_without_raw_links() {
+        let text = format_results(
+            vec![Hit {
+                title: "A concrete development".to_string(),
+                snippet: "Officials announced the change on Friday.".to_string(),
+                url: "https://www.reuters.com/world/example".to_string(),
+                published: Some("2026-07-10T10:30:00Z".to_string()),
+            }],
+            5,
+        );
+        assert!(text.contains("SEARCH RESULT 1"));
+        assert!(text.contains("Source: reuters.com"));
+        assert!(text.contains("Published: 2026-07-10"));
+        assert!(!text.contains("https://"));
+    }
+
+    #[test]
+    fn extracts_source_domain_for_spoken_search_context() {
+        assert_eq!(
+            source_domain("https://www.example.com/news/item"),
+            "example.com"
+        );
+    }
+
+    #[test]
+    fn ranks_concrete_reports_ahead_of_generic_news_hubs() {
+        let mut hits = vec![
+            Hit {
+                title: "Iran: Latest news and updates".to_string(),
+                snippet: "Stay on top of the latest developments and updated coverage.".to_string(),
+                url: "https://example.com/iran".to_string(),
+                published: None,
+            },
+            Hit {
+                title: "Officials announce new agreement".to_string(),
+                snippet:
+                    "2 hours ago · Officials announced a ceasefire after 14 people were killed."
+                        .to_string(),
+                url: "https://example.org/article".to_string(),
+                published: None,
+            },
+        ];
+        rank_evidence(&mut hits);
+        assert_eq!(hits[0].title, "Officials announce new agreement");
     }
 
     // Hits the live DuckDuckGo lite endpoint. Excluded from the default run;

@@ -29,7 +29,17 @@ pub struct ModelPaths {
 }
 
 pub struct ManagedServer {
+    /// None when we adopted a server someone else started, in which case it is
+    /// not ours to kill.
     child: Option<Child>,
+}
+
+impl ManagedServer {
+    /// Whether dropping this actually stops a process. False for an adopted
+    /// server, so callers do not claim to have stopped something they did not.
+    pub fn owns_process(&self) -> bool {
+        self.child.is_some()
+    }
 }
 
 impl Drop for ManagedServer {
@@ -91,6 +101,44 @@ pub fn ensure_model(cfg: &Config) -> Result<ModelPaths, Box<dyn std::error::Erro
     download_model_file(cfg, &cfg.model.weights, &root.join(&cfg.model.weights))?;
     download_model_file(cfg, &cfg.model.mmproj, &root.join(&cfg.model.mmproj))?;
     Ok(model_paths(cfg))
+}
+
+/// Ensure the GPU-poor ASR model is present locally, downloading and extracting
+/// the GitHub-release tarball on first use. Returns the model directory.
+pub fn ensure_asr_model(cfg: &Config) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let dir = expand_tilde(&cfg.asr.model_dir);
+    // The encoder is the heavyweight file; its presence means extraction finished.
+    if dir.join("encoder.int8.onnx").exists() {
+        return Ok(dir);
+    }
+    let parent = dir
+        .parent()
+        .map(PathBuf::from)
+        .ok_or("invalid asr model_dir")?;
+    fs::create_dir_all(&parent)?;
+
+    let url = format!(
+        "https://github.com/{}/releases/download/{}/{}.tar.bz2",
+        cfg.asr.repo, cfg.asr.release, cfg.asr.archive
+    );
+    let tarball = parent.join(format!("{}.tar.bz2", cfg.asr.archive));
+    download_url(&url, &tarball)?;
+
+    log_line(format!("extracting ASR model into {}", parent.display()));
+    let status = Command::new("/usr/bin/tar")
+        .arg("xjf")
+        .arg(&tarball)
+        .arg("-C")
+        .arg(&parent)
+        .status()?;
+    let _ = fs::remove_file(&tarball);
+    if !status.success() {
+        return Err("failed to extract ASR model tarball".into());
+    }
+    if !dir.join("encoder.int8.onnx").exists() {
+        return Err("ASR model files missing after extraction".into());
+    }
+    Ok(dir)
 }
 
 pub fn ensure_engine() -> Result<(), Box<dyn std::error::Error>> {
@@ -179,7 +227,8 @@ fn server_log_file(
         .open("/tmp/yappr-llama-server.log")?)
 }
 
-fn healthy(port: u16) -> bool {
+/// Probe the backend's /health endpoint. Cheap enough to poll: 2s timeout, no body.
+pub fn healthy(port: u16) -> bool {
     Client::builder()
         .timeout(Duration::from_secs(2))
         .build()
@@ -188,7 +237,7 @@ fn healthy(port: u16) -> bool {
         .unwrap_or(false)
 }
 
-fn serves_model(port: u16, weights: &Path) -> bool {
+pub fn serves_model(port: u16, weights: &Path) -> bool {
     let url = format!("http://127.0.0.1:{port}/props");
     let props = Client::builder()
         .timeout(Duration::from_secs(2))
@@ -235,7 +284,7 @@ fn model_snapshot_dir(cfg: &Config) -> PathBuf {
 fn download_model_file(
     cfg: &Config,
     filename: &str,
-    dest: &PathBuf,
+    dest: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if dest.exists() {
         return Ok(());
@@ -244,6 +293,15 @@ fn download_model_file(
         "https://huggingface.co/{}/resolve/main/{filename}",
         cfg.model.repo
     );
+    download_url(&url, dest)
+}
+
+/// Download `url` to `dest` with resume support and live progress, used for both
+/// HuggingFace model files and GitHub-release ASR tarballs.
+fn download_url(url: &str, dest: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    if dest.exists() {
+        return Ok(());
+    }
     let tmp = dest.with_extension("part");
     // Resume a partial download from a previous run instead of restarting the
     // multi-GB transfer: ask for the bytes after what we already have.
@@ -251,7 +309,7 @@ fn download_model_file(
     let client = Client::builder()
         .timeout(Duration::from_secs(1800))
         .build()?;
-    let mut request = client.get(&url);
+    let mut request = client.get(url);
     if have > 0 {
         request = request.header(reqwest::header::RANGE, format!("bytes={have}-"));
     }
@@ -305,8 +363,16 @@ fn set_download_percent(downloaded: u64, total: Option<u64>) {
 
 #[cfg(test)]
 mod tests {
-    use super::model_path_matches;
+    use super::{healthy, model_path_matches};
     use std::path::PathBuf;
+
+    #[test]
+    fn unreachable_port_is_not_healthy() {
+        // The backend-down watcher relies on this returning false rather than
+        // blocking or panicking when nothing is listening. Port 1 is never a
+        // llama-server, so this needs no network and no fixture.
+        assert!(!healthy(1));
+    }
 
     #[test]
     fn accepts_exact_or_suffix_model_path_match() {
