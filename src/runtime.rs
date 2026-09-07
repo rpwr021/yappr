@@ -135,6 +135,14 @@ impl Runtime {
         self.ready.load(Ordering::SeqCst)
     }
 
+    /// Whether there is a transcript worth copying, used to enable the menu item.
+    pub fn has_transcript(&self) -> bool {
+        self.last_transcript
+            .lock()
+            .map(|t| t.as_deref().is_some_and(|text| !text.trim().is_empty()))
+            .unwrap_or(false)
+    }
+
     /// Speak a short status message, rate-limited so repeated hotkey presses
     /// during the download don't stack overlapping speech.
     fn announce(&self, message: &str) {
@@ -245,6 +253,10 @@ impl Runtime {
         // Dictation Only mode has no chat model loaded.
         if chat && self.menu_config.mode.is_poor() {
             log_line("ignoring chat hotkey: Dictation Only mode has no chat model");
+            // Flash the tray as well as speaking: the announcement is the only
+            // feedback otherwise, so with the volume down or output routed
+            // elsewhere the keypress appeared to do nothing at all.
+            set_status(ui::ERROR);
             self.announce("Chat is unavailable in Dictation Only mode.");
             return;
         }
@@ -322,6 +334,13 @@ impl Runtime {
                     log_line("restart unavailable: not running from an .app bundle");
                 }
             }
+            "website" => match std::process::Command::new("/usr/bin/open")
+                .arg(ui::WEBSITE)
+                .spawn()
+            {
+                Ok(_) => log_line(format!("opened {}", ui::WEBSITE)),
+                Err(err) => log_line(format!("open website failed: {err}")),
+            },
             "logs" => match open_log_path() {
                 Ok(path) => log_line(format!("opened log: {path}")),
                 Err(err) => log_line(format!("open log failed: {err}")),
@@ -674,6 +693,18 @@ fn process_recording(
         return;
     }
     debug_line(format!("heard: {text}"));
+    // An empty transcript is a failure, not a success. ASR returns Ok("") for
+    // undecodable audio, and nothing checked: dictation then fired Cmd+V with an
+    // empty clipboard and ended at Ready, so a broken transcription looked like a
+    // working one that had nothing to say.
+    if text.trim().is_empty() {
+        set_status(ui::ERROR);
+        log_line(format!(
+            "transcription produced no text; peak={:.4} speech may not have been captured",
+            captured.peak
+        ));
+        return;
+    }
     if let Some(runtime) = RUNTIME.get() {
         if let Ok(mut transcript) = runtime.last_transcript.lock() {
             *transcript = Some(text.clone());

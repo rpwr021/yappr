@@ -36,6 +36,9 @@ pub const SETUP_FAILED: u8 = 12;
 const NEEDS_RESTART: &str = "Takes effect after restart";
 const APPLIES_NEXT_ANSWER: &str = "Takes effect on the next answer";
 
+/// Landing page, opened by the Website menu item and shown in the About panel.
+pub const WEBSITE: &str = "https://getyappr.github.io";
+
 /// Radio-style menu groups. Named constants rather than bare strings because the
 /// group has to match between the builder here and the click handler in `runtime`;
 /// a typo in either used to mean the checkmark silently stopped moving.
@@ -49,6 +52,56 @@ pub mod group {
 
 thread_local! {
     static SELECTABLE_MENU_ITEMS: RefCell<Vec<SelectableMenuItem>> = const { RefCell::new(Vec::new()) };
+    /// Retained so the tray tick can enable it once there is something to copy.
+    static COPY_TRANSCRIPT_ITEM: RefCell<Option<MenuItem>> = const { RefCell::new(None) };
+}
+
+/// Enable Copy Last Transcript once a transcript exists.
+///
+/// Driven from the tray tick rather than pushed from the audio pipeline: the menu
+/// items live in a thread-local and muda's items are not `Send`, while the
+/// pipeline runs on a worker thread. The tick already runs on the main thread, so
+/// it is the one place that can touch them.
+fn sync_copy_transcript_enabled(has_transcript: bool) {
+    COPY_TRANSCRIPT_ITEM.with(|item| {
+        if let Some(item) = item.borrow().as_ref() {
+            if item.is_enabled() != has_transcript {
+                item.set_enabled(has_transcript);
+            }
+        }
+    });
+}
+
+fn chat_hint_text(is_poor: bool) -> &'static str {
+    if is_poor {
+        "Chat: unavailable in Dictation Only mode"
+    } else {
+        "Chat: hold ⌘ + Right Option"
+    }
+}
+
+fn model_menu_title(is_poor: bool) -> &'static str {
+    if is_poor {
+        "Chat Model (Dictate + Chat mode only)"
+    } else {
+        "Chat Model"
+    }
+}
+
+fn language_menu_title(is_poor: bool) -> &'static str {
+    if is_poor {
+        "Output Language (Dictate + Chat mode only)"
+    } else {
+        "Output Language"
+    }
+}
+
+fn speech_menu_title(is_poor: bool) -> &'static str {
+    if is_poor {
+        "Answer Voice (Dictate + Chat mode only)"
+    } else {
+        "Answer Voice"
+    }
 }
 
 #[derive(Clone)]
@@ -71,26 +124,26 @@ pub fn create_status_item(cfg: &Config) -> Result<StatusItem, Box<dyn std::error
     let status = MenuItem::with_id("status", "Status: Ready", false, None);
     // Non-clickable reminders of the (fixed) push-to-talk hotkeys.
     let dictate_hint = MenuItem::with_id("hint_dictate", "Dictate: hold Right Option", false, None);
-    let chat_hint_text = if cfg.mode.is_poor() {
-        "Chat: unavailable in Dictation Only mode"
-    } else {
-        "Chat: hold ⌘ + Right Option"
-    };
-    let chat_hint = MenuItem::with_id("hint_chat", chat_hint_text, false, None);
+    let chat_hint = MenuItem::with_id("hint_chat", chat_hint_text(cfg.mode.is_poor()), false, None);
     let microphone = microphone_menu(cfg)?;
     let model = model_menu(cfg)?;
     let language = language_menu(cfg)?;
     let speech = speech_menu(cfg)?;
-    let copy = MenuItem::with_id("copy_transcript", "Copy Last Transcript", true, None);
+    // Starts disabled: with no transcript yet, clicking it only wrote a line to
+    // the log, so the click was indistinguishable from a successful copy. The
+    // tray tick enables it once there is something to copy.
+    let copy = MenuItem::with_id("copy_transcript", "Copy Last Transcript", false, None);
     // Clickable when there is a log to reveal. It used to be disabled, so the
     // status line's "see log" pointed at a path the menu would not open.
     let logs = MenuItem::with_id("logs", log_label(cfg), cfg.logging.enabled, None);
-    let version = MenuItem::with_id(
-        "version",
-        format!("Yappr {}", crate::version()),
-        false,
-        None,
+    // The version row was a disabled label. Use the native About panel instead,
+    // which shows the version and links to the site, so the row does something.
+    let about = PredefinedMenuItem::about(
+        Some(&format!("About Yappr {}", crate::version())),
+        Some(about_metadata()),
     );
+    let website = MenuItem::with_id("website", "Yappr Website", true, None);
+    COPY_TRANSCRIPT_ITEM.with(|item| *item.borrow_mut() = Some(copy.clone()));
     // Three rows tell the user to restart; without this the only way out was Quit
     // followed by finding and relaunching the app by hand.
     let restart = MenuItem::with_id("restart", "Restart Yappr", true, None);
@@ -110,7 +163,8 @@ pub fn create_status_item(cfg: &Config) -> Result<StatusItem, Box<dyn std::error
         &copy,
         &logs,
         &separator,
-        &version,
+        &about,
+        &website,
         &restart,
         &quit,
     ])?;
@@ -186,6 +240,7 @@ extern "C" fn animation_tick(_timer: *mut c_void, info: *mut c_void) {
     }
     item.last_state = state;
     item.status.set_text(status_text(state));
+    sync_copy_transcript_enabled(runtime.has_transcript());
 }
 
 /// Status line text, with live download progress appended while fetching the model
@@ -232,6 +287,19 @@ fn missing_permissions_text() -> Option<String> {
     })
 }
 
+/// Metadata for the native About panel. macOS ignores `authors` and `comments`,
+/// so everything worth saying goes in the fields it does render.
+fn about_metadata() -> tray_icon::menu::AboutMetadata {
+    tray_icon::menu::AboutMetadata {
+        name: Some("Yappr".to_string()),
+        version: Some(crate::version()),
+        website: Some(WEBSITE.to_string()),
+        website_label: Some("getyappr.github.io".to_string()),
+        copyright: Some("Local, on-device dictation and voice chat for macOS".to_string()),
+        ..Default::default()
+    }
+}
+
 fn microphone_menu(cfg: &Config) -> Result<Submenu, Box<dyn std::error::Error>> {
     let menu = Submenu::with_id("microphone", "Microphone", true);
     menu.append(&selectable_item(
@@ -257,11 +325,7 @@ fn microphone_menu(cfg: &Config) -> Result<Submenu, Box<dyn std::error::Error>> 
 fn model_menu(cfg: &Config) -> Result<Submenu, Box<dyn std::error::Error>> {
     let menu = Submenu::with_id(
         "model",
-        if cfg.mode.is_poor() {
-            "Chat Model (Dictate + Chat mode only)"
-        } else {
-            "Chat Model"
-        },
+        model_menu_title(cfg.mode.is_poor()),
         !cfg.mode.is_poor(),
     );
     if cfg.model.choices.is_empty() {
@@ -293,15 +357,7 @@ fn model_menu(cfg: &Config) -> Result<Submenu, Box<dyn std::error::Error>> {
 /// nothing while still looking live.
 fn language_menu(cfg: &Config) -> Result<Submenu, Box<dyn std::error::Error>> {
     let usable = !cfg.mode.is_poor();
-    let menu = Submenu::with_id(
-        "language",
-        if usable {
-            "Output Language"
-        } else {
-            "Output Language (Dictate + Chat mode only)"
-        },
-        usable,
-    );
+    let menu = Submenu::with_id("language", language_menu_title(!usable), usable);
     for language in &cfg.language.options {
         menu.append(&selectable_item(
             group::LANGUAGE,
@@ -331,15 +387,7 @@ fn language_menu(cfg: &Config) -> Result<Submenu, Box<dyn std::error::Error>> {
 /// Disabled in Dictation Only mode, where nothing is ever spoken.
 fn speech_menu(cfg: &Config) -> Result<Submenu, Box<dyn std::error::Error>> {
     let usable = !cfg.mode.is_poor();
-    let menu = Submenu::with_id(
-        "speech",
-        if usable {
-            "Answer Voice"
-        } else {
-            "Answer Voice (Dictate + Chat mode only)"
-        },
-        usable,
-    );
+    let menu = Submenu::with_id("speech", speech_menu_title(!usable), usable);
 
     let say_voice = Submenu::with_id("say_voice", "macOS", true);
     say_voice.append(&selectable_item(
@@ -675,8 +723,9 @@ struct TimerContext {
 #[cfg(test)]
 mod tests {
     use super::{
-        group, is_preferred_say_voice, kokoro_locales, kokoro_voices, log_label, mode_switch_text,
-        say_voice_label, APPLIES_NEXT_ANSWER, NEEDS_RESTART,
+        about_metadata, chat_hint_text, group, is_preferred_say_voice, kokoro_locales,
+        kokoro_voices, language_menu_title, log_label, mode_switch_text, model_menu_title,
+        say_voice_label, speech_menu_title, APPLIES_NEXT_ANSWER, NEEDS_RESTART, WEBSITE,
         say_voice_name,
     };
 
@@ -812,6 +861,43 @@ mod tests {
             .collect();
         assert!(doras.len() > 1, "Dora repeats across locales");
         assert_ne!(doras[0], doras[1], "repeated names differ by locale");
+    }
+
+    #[test]
+    fn website_is_the_landing_page_not_the_repo() {
+        // The About panel and the Website item must point at the product page,
+        // not github.com/rpwr021/yappr, which is where the source lives.
+        assert_eq!(WEBSITE, "https://getyappr.github.io");
+        assert!(WEBSITE.starts_with("https://"));
+        assert_eq!(
+            about_metadata().version.as_deref(),
+            Some(crate::version().as_str())
+        );
+    }
+
+    #[test]
+    fn mode_titles_flag_what_is_unavailable() {
+        // In Dictation Only mode these three do nothing, so each says so in its
+        // own title rather than looking live.
+        for title in [
+            model_menu_title(true),
+            language_menu_title(true),
+            speech_menu_title(true),
+        ] {
+            assert!(
+                title.contains("Dictate + Chat mode only"),
+                "{title} should say when it applies"
+            );
+        }
+        for title in [
+            model_menu_title(false),
+            language_menu_title(false),
+            speech_menu_title(false),
+        ] {
+            assert!(!title.contains("only"), "{title} should be a plain title");
+        }
+        assert!(chat_hint_text(true).contains("unavailable"));
+        assert!(chat_hint_text(false).contains("⌘"));
     }
 
     #[test]
