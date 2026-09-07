@@ -334,7 +334,7 @@ impl Runtime {
                     log_line("restart unavailable: not running from an .app bundle");
                 }
             }
-            "website" => match std::process::Command::new("/usr/bin/open")
+            "about" => match std::process::Command::new("/usr/bin/open")
                 .arg(ui::WEBSITE)
                 .spawn()
             {

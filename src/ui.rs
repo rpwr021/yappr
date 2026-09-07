@@ -36,7 +36,7 @@ pub const SETUP_FAILED: u8 = 12;
 const NEEDS_RESTART: &str = "Takes effect after restart";
 const APPLIES_NEXT_ANSWER: &str = "Takes effect on the next answer";
 
-/// Landing page, opened by the Website menu item and shown in the About panel.
+/// Landing page, opened by the About Yappr menu item.
 pub const WEBSITE: &str = "https://getyappr.github.io";
 
 /// Radio-style menu groups. Named constants rather than bare strings because the
@@ -136,13 +136,15 @@ pub fn create_status_item(cfg: &Config) -> Result<StatusItem, Box<dyn std::error
     // Clickable when there is a log to reveal. It used to be disabled, so the
     // status line's "see log" pointed at a path the menu would not open.
     let logs = MenuItem::with_id("logs", log_label(cfg), cfg.logging.enabled, None);
-    // The version row was a disabled label. Use the native About panel instead,
-    // which shows the version and links to the site, so the row does something.
-    let about = PredefinedMenuItem::about(
-        Some(&format!("About Yappr {}", crate::version())),
-        Some(about_metadata()),
+    // One About row, not two: the version used to be a disabled label, and a
+    // native About panel plus a separate Website row said the same thing twice.
+    // This carries the version and opens the site when clicked.
+    let about = MenuItem::with_id(
+        "about",
+        format!("About Yappr {}", crate::version()),
+        true,
+        None,
     );
-    let website = MenuItem::with_id("website", "Yappr Website", true, None);
     COPY_TRANSCRIPT_ITEM.with(|item| *item.borrow_mut() = Some(copy.clone()));
     // Three rows tell the user to restart; without this the only way out was Quit
     // followed by finding and relaunching the app by hand.
@@ -164,7 +166,6 @@ pub fn create_status_item(cfg: &Config) -> Result<StatusItem, Box<dyn std::error
         &logs,
         &separator,
         &about,
-        &website,
         &restart,
         &quit,
     ])?;
@@ -285,19 +286,6 @@ fn missing_permissions_text() -> Option<String> {
         *cache = Some((std::time::Instant::now(), text.clone()));
         text
     })
-}
-
-/// Metadata for the native About panel. macOS ignores `authors` and `comments`,
-/// so everything worth saying goes in the fields it does render.
-fn about_metadata() -> tray_icon::menu::AboutMetadata {
-    tray_icon::menu::AboutMetadata {
-        name: Some("Yappr".to_string()),
-        version: Some(crate::version()),
-        website: Some(WEBSITE.to_string()),
-        website_label: Some("getyappr.github.io".to_string()),
-        copyright: Some("Local, on-device dictation and voice chat for macOS".to_string()),
-        ..Default::default()
-    }
 }
 
 fn microphone_menu(cfg: &Config) -> Result<Submenu, Box<dyn std::error::Error>> {
@@ -723,7 +711,7 @@ struct TimerContext {
 #[cfg(test)]
 mod tests {
     use super::{
-        about_metadata, chat_hint_text, group, is_preferred_say_voice, kokoro_locales,
+        chat_hint_text, group, is_preferred_say_voice, kokoro_locales,
         kokoro_voices, language_menu_title, log_label, mode_switch_text, model_menu_title,
         say_voice_label, speech_menu_title, APPLIES_NEXT_ANSWER, NEEDS_RESTART, WEBSITE,
         say_voice_name,
@@ -864,15 +852,11 @@ mod tests {
     }
 
     #[test]
-    fn website_is_the_landing_page_not_the_repo() {
-        // The About panel and the Website item must point at the product page,
-        // not github.com/rpwr021/yappr, which is where the source lives.
+    fn about_opens_the_landing_page_not_the_repo() {
+        // About Yappr must open the product page, not github.com/rpwr021/yappr,
+        // which is where the source lives.
         assert_eq!(WEBSITE, "https://getyappr.github.io");
         assert!(WEBSITE.starts_with("https://"));
-        assert_eq!(
-            about_metadata().version.as_deref(),
-            Some(crate::version().as_str())
-        );
     }
 
     #[test]
