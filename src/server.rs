@@ -29,7 +29,17 @@ pub struct ModelPaths {
 }
 
 pub struct ManagedServer {
+    /// None when we adopted a server someone else started, in which case it is
+    /// not ours to kill.
     child: Option<Child>,
+}
+
+impl ManagedServer {
+    /// Whether dropping this actually stops a process. False for an adopted
+    /// server, so callers do not claim to have stopped something they did not.
+    pub fn owns_process(&self) -> bool {
+        self.child.is_some()
+    }
 }
 
 impl Drop for ManagedServer {

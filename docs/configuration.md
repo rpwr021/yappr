@@ -171,7 +171,7 @@ falls back to DuckDuckGo; if neither responds the tool is not offered.
 | --- | --- | --- |
 | `enabled` | `true` | Write the app log. |
 | `debug` | `false` | Also log sensitive content (transcripts, answers, tool queries). Keep `false` unless debugging. |
-| `path` | `~/.yappr/yappr.log` | Log file path. |
+| `path` | `~/.yappr/yappr.log` | Log file path. Rotated once it passes 1 MB, keeping one previous generation as `<path>.1`. |
 
 Tail the log:
 

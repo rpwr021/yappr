@@ -235,11 +235,26 @@ impl Runtime {
     /// destructors, so without this the backend (and its loaded model) would
     /// survive in memory after quit. Dropping the ManagedServer kills the child.
     pub fn shutdown(&self) {
-        if let Ok(mut slot) = self.managed_server.lock() {
-            if let Some(server) = slot.take() {
-                drop(server);
-                log_line("managed llama-server stopped");
+        // Recover from poisoning rather than skipping the kill: a panic elsewhere
+        // must not silently leak a multi-GB backend. The slot holds an Option, so
+        // there is no torn state to worry about.
+        let mut slot = match self.managed_server.lock() {
+            Ok(slot) => slot,
+            Err(poisoned) => {
+                log_line("managed server lock poisoned; stopping backend anyway");
+                poisoned.into_inner()
             }
+        };
+        if let Some(server) = slot.take() {
+            // An adopted server (started outside Yappr) has no child to kill, so
+            // saying "stopped" would assert something that did not happen.
+            let owned = server.owns_process();
+            drop(server);
+            log_line(if owned {
+                "managed llama-server stopped"
+            } else {
+                "left externally-started llama-server running"
+            });
         }
     }
 
@@ -367,7 +382,7 @@ impl Runtime {
                         "audio device selected: {}",
                         value.as_deref().unwrap_or("System Default")
                     )),
-                    Err(err) => log_line(format!("audio device save failed: {err}")),
+                    Err(err) => self.report_save_failure("microphone", err),
                 }
             }
             id if id.starts_with("mode:") => {
@@ -377,7 +392,7 @@ impl Runtime {
                 let tier = id.trim_start_matches("mode:");
                 match Config::set_user_value("mode", "tier", tier) {
                     Ok(()) => log_line(format!("mode selected: {tier}; restart Yappr to apply")),
-                    Err(err) => log_line(format!("mode save failed: {err}")),
+                    Err(err) => self.report_save_failure("mode", err),
                 }
             }
             id if id.starts_with("model:") => {
@@ -385,7 +400,7 @@ impl Runtime {
                 ui::select_menu_item(ui::group::MODEL, id);
                 match Config::set_user_value("models", "active", model) {
                     Ok(()) => log_line(format!("model selected: {model}; restart Yappr to apply")),
-                    Err(err) => log_line(format!("model save failed: {err}")),
+                    Err(err) => self.report_save_failure("chat model", err),
                 }
             }
             id if id.starts_with("lang:") => {
@@ -395,7 +410,7 @@ impl Runtime {
                     Ok(()) => log_line(format!(
                         "output language selected: {language}; restart Yappr to apply"
                     )),
-                    Err(err) => log_line(format!("language save failed: {err}")),
+                    Err(err) => self.report_save_failure("output language", err),
                 }
             }
             // No speech_backend arm: the Backend submenu is gone, since choosing a
@@ -422,7 +437,7 @@ impl Runtime {
                         ));
                     }
                     Err(err) => {
-                        log_line(format!("speech voice save failed: {err}"));
+                        self.report_save_failure("voice", err);
                         self.resync_speech_menu();
                     }
                 }
@@ -459,13 +474,25 @@ impl Runtime {
                         log_line(format!("kokoro speaker selected: {sid}; backend=kokoro"));
                     }
                     Err(err) => {
-                        log_line(format!("kokoro speaker save failed: {err}"));
+                        self.report_save_failure("Kokoro speaker", err);
                         self.resync_speech_menu();
                     }
                 }
             }
             _ => {}
         }
+    }
+
+    /// A setting could not be written to config.ini.
+    ///
+    /// These used to only log, while the in-memory value and the checkmark had
+    /// already been updated: the menu showed the new selection, the file kept the
+    /// old one, and it silently reverted on the next launch. Flash the tray and
+    /// say so out loud, since the user is looking at the menu when it happens.
+    fn report_save_failure(&self, what: &str, err: impl std::fmt::Display) {
+        log_line(format!("{what} save failed: {err}"));
+        set_status(ui::ERROR);
+        self.announce(&format!("Could not save the {what} setting."));
     }
 
     /// Put the speech menu's checkmarks back in sync with the live config.

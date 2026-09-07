@@ -16,6 +16,7 @@ use std::path::PathBuf;
 pub fn run(args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
     let cfg = Config::load()?;
     logger::init(cfg.logging.enabled, cfg.logging.debug, &cfg.logging.path);
+    install_panic_hook();
 
     if args.iter().any(|arg| arg == "--check") {
         let checks = print_checks(&cfg);
@@ -109,6 +110,10 @@ pub fn run(args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
         let client = ChatClient::new(cfg.clone())?;
         let runtime = Runtime::new(cfg, client);
         runtime.hold_instance_lock(instance_lock);
+        // A takeover SIGTERMs the previous instance, and the default disposition
+        // exits without unwinding, so its managed llama-server was never killed
+        // and leaked a multi-GB process the new instance then adopted unmanaged.
+        install_term_handler();
         // Backend (model download, engine install, llama-server) is provisioned
         // in the background from hotkey::run so the menu bar appears immediately.
         return hotkey::run(runtime);
@@ -393,6 +398,64 @@ fn print_summary(checks: &Checks) {
             println!("  fail: {failure}");
         }
     }
+}
+
+/// Route panics into the log.
+///
+/// The default hook writes to stderr, which for a Finder-launched `.app` goes
+/// nowhere a user can see. A panic in the audio worker or a provisioning thread
+/// therefore killed only that thread and left the app running with a Ready menu
+/// bar, silently unable to do the thing that panicked.
+fn install_panic_hook() {
+    let default = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let location = info
+            .location()
+            .map(|l| format!("{}:{}", l.file(), l.line()))
+            .unwrap_or_else(|| "unknown location".to_string());
+        // Panic payloads are usually &str or String; anything else is opaque.
+        let message = info
+            .payload()
+            .downcast_ref::<&str>()
+            .map(|s| (*s).to_string())
+            .or_else(|| info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "unknown panic payload".to_string());
+        let thread = std::thread::current();
+        let name = thread.name().unwrap_or("unnamed").to_string();
+        crate::logger::log_line(format!(
+            "PANIC in thread '{name}' at {location}: {message}"
+        ));
+        default(info);
+    }));
+}
+
+/// Shut the backend down on SIGTERM instead of dying with it still running.
+///
+/// The handler itself only sets a flag: it runs on an interrupted thread where
+/// almost nothing is safe to call, so logging or taking the runtime's mutexes
+/// there could deadlock. A watcher thread notices the flag and does the work.
+fn install_term_handler() {
+    static TERMINATED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+    extern "C" fn on_term(_signal: i32) {
+        TERMINATED.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    unsafe {
+        libc::signal(libc::SIGTERM, on_term as *const () as libc::sighandler_t);
+    }
+
+    std::thread::spawn(|| loop {
+        if TERMINATED.load(std::sync::atomic::Ordering::SeqCst) {
+            crate::logger::log_line("SIGTERM received; stopping backend before exit");
+            if let Some(runtime) = crate::runtime::runtime() {
+                runtime.shutdown();
+            }
+            std::process::exit(0);
+        }
+        // Fast enough to beat the 2s SIGTERM-to-SIGKILL window in instance.rs.
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    });
 }
 
 fn arg_value(args: &[String], key: &str) -> Option<PathBuf> {

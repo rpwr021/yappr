@@ -47,6 +47,7 @@ else
   echo "          ./scripts/make_signing_identity.sh"
 fi
 
-echo "Built $APP"
+echo "Built $APP (staging copy)"
 echo "Diagnostics: $APP/Contents/MacOS/Yappr --check"
-echo "Not installed. Use ./scripts/run.sh --build to install /Applications/Yappr.app and launch it."
+echo "Not installed. Use ./scripts/run.sh to install /Applications/Yappr.app and launch it;"
+echo "that also removes this staging copy, so only one bundle holds permissions."
