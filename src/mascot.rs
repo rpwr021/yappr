@@ -8,7 +8,13 @@ use crate::ui::{
     RECORDING_CHAT, RECORDING_DICTATE, SETUP_FAILED, SPEAKING, STARTING, TRANSCRIBING,
 };
 
-const ICON_SIZE: usize = 32;
+/// Canvas size for the rendered tray icon, in pixels.
+///
+/// tray-icon displays the image at a hardcoded 18pt height, so on a 2x Retina
+/// display the slot is 36 physical pixels. Rendering at 32 meant AppKit *upscaled*
+/// by 1.125 — a non-integer factor that blurred the result and undid the
+/// box-filter downscale below. Matching 36 keeps our resampling the only one.
+const ICON_SIZE: usize = 36;
 
 const IDLE_ICON: &[u8] = include_bytes!("../resources/assets/logos/yappr-logo-01-idle.png");
 const CHAT_ICON: &[u8] =
@@ -30,14 +36,7 @@ const DICTATE_FRAMES: [&[u8]; 4] = [
 
 pub fn icon_for_state(state: u8, frame: usize) -> Result<Icon, Box<dyn std::error::Error>> {
     let png = png_for_state_frame(state, frame);
-    // Dictate frames share one crop box so the head stays put while the mouth
-    // and sound dots animate; other states crop to their own content.
-    let crop = if state == RECORDING_DICTATE {
-        Some(dictate_crop())
-    } else {
-        None
-    };
-    let rgba = decode_icon(png, crop)?;
+    let rgba = decode_icon(png, shared_crop())?;
     Icon::from_rgba(rgba, ICON_SIZE as u32, ICON_SIZE as u32).map_err(Into::into)
 }
 
@@ -58,12 +57,28 @@ fn png_for_state_frame(state: u8, frame: usize) -> &'static [u8] {
     }
 }
 
-/// Union of the content bounds across all dictate frames, computed once.
-fn dictate_crop() -> Rect {
+/// Every icon, so the shared crop covers all of them.
+const ALL_ICONS: [&[u8]; 6] = [
+    IDLE_ICON,
+    CHAT_ICON,
+    TRANSCRIBING_ICON,
+    ANSWERING_ICON,
+    SPEAKING_ICON,
+    ERROR_ICON,
+];
+
+/// One crop box covering the visible content of every icon, computed once.
+///
+/// Each asset used to be cropped to its own alpha bounds and scaled to fill the
+/// canvas. Since those bounds differ (371x441 to 475x472 across the set), the
+/// mascot changed size and shifted position on every state change — a visible
+/// twitch in the menu bar. A shared box keeps it planted.
+fn shared_crop() -> Rect {
     static CROP: OnceLock<Rect> = OnceLock::new();
     *CROP.get_or_init(|| {
-        DICTATE_FRAMES
+        ALL_ICONS
             .iter()
+            .chain(DICTATE_FRAMES.iter())
             .filter_map(|png| decode_rgba(png).ok())
             .map(|img| content_bounds(&img.pixels, img.width, img.height))
             .reduce(|a, b| a.union(b))
@@ -133,14 +148,11 @@ fn decode_rgba(bytes: &[u8]) -> Result<Rgba, Box<dyn std::error::Error>> {
     })
 }
 
-/// Crop the icon to visible content so it fills the menu-bar canvas instead of
-/// the source's transparent padding, then scale that region to `ICON_SIZE`.
-/// `crop` overrides the per-image content bounds (used to share one box across
-/// animation frames).
-fn decode_icon(bytes: &[u8], crop: Option<Rect>) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+/// Crop to `crop` so the icon fills the menu-bar canvas instead of the source's
+/// transparent padding, then scale that region to `ICON_SIZE`.
+fn decode_icon(bytes: &[u8], crop: Rect) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let img = decode_rgba(bytes)?;
-    let bounds = crop.unwrap_or_else(|| content_bounds(&img.pixels, img.width, img.height));
-    Ok(scale_region(&img, bounds, ICON_SIZE))
+    Ok(scale_region(&img, crop, ICON_SIZE))
 }
 
 /// Bounding box of pixels with alpha above a small threshold (keeps soft halos).
@@ -179,8 +191,8 @@ fn content_bounds(pixels: &[u8], width: usize, height: usize) -> Rect {
 /// transparent canvas, preserving aspect ratio.
 ///
 /// Averages every source pixel that maps to a destination pixel rather than point
-/// sampling one of them. The art is 512x512 going into 32x32, so nearest-neighbour
-/// kept 1 pixel in 256 and aliased every edge. Colour is weighted by alpha
+/// sampling one of them. The art is 512x512 going into 36x36, so nearest-neighbour
+/// kept 1 pixel in 200 and aliased every edge. Colour is weighted by alpha
 /// (premultiplied) so transparent pixels don't drag a dark halo into the edges.
 fn scale_region(img: &Rgba, rect: Rect, size: usize) -> Vec<u8> {
     let mut out = vec![0; size * size * 4];
@@ -232,8 +244,8 @@ fn scale_region(img: &Rgba, rect: Rect, size: usize) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::{
-        content_bounds, icon_for_state, is_animated, png_for_state_frame, scale_region, Rect, Rgba,
-        DICTATE_FRAMES, ICON_SIZE,
+        content_bounds, decode_rgba, icon_for_state, is_animated, png_for_state_frame, scale_region,
+        shared_crop, Rect, Rgba, DICTATE_FRAMES, ICON_SIZE,
     };
     use crate::ui::{
         BACKEND_DOWN, ERROR, IDLE, NOTICE, RECORDING_CHAT, RECORDING_DICTATE, TRANSCRIBING,
@@ -260,6 +272,37 @@ mod tests {
         assert!(icon_for_state(IDLE, 0).is_ok());
         assert!(icon_for_state(TRANSCRIBING, 7).is_ok());
         assert!(icon_for_state(BACKEND_DOWN, 0).is_ok());
+    }
+
+    #[test]
+    fn canvas_matches_the_retina_menu_bar_slot() {
+        // tray-icon renders at a hardcoded 18pt height, so a 2x display needs 36
+        // physical pixels. Any other value makes AppKit rescale by a non-integer
+        // factor and blur away the box filter below.
+        assert_eq!(ICON_SIZE, 36, "must equal 18pt at 2x");
+    }
+
+    #[test]
+    fn all_states_share_one_crop_so_the_icon_does_not_jump() {
+        // Per-image crops ranged from 371x441 to 476x474 and each was scaled to
+        // fill the canvas, so the mascot resized and shifted on every state change.
+        let crop = shared_crop();
+        for state in [IDLE, ERROR, RECORDING_CHAT, TRANSCRIBING, NOTICE] {
+            let img = decode_rgba(png_for_state_frame(state, 0)).expect("decodes");
+            let own = content_bounds(&img.pixels, img.width, img.height);
+            // The shared box must contain every icon's own content, or art would
+            // be clipped at the edges.
+            assert!(own.x >= crop.x, "state {state} extends left of the crop");
+            assert!(own.y >= crop.y, "state {state} extends above the crop");
+            assert!(
+                own.x + own.w <= crop.x + crop.w,
+                "state {state} extends right of the crop"
+            );
+            assert!(
+                own.y + own.h <= crop.y + crop.h,
+                "state {state} extends below the crop"
+            );
+        }
     }
 
     #[test]
