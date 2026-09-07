@@ -298,6 +298,34 @@ impl Runtime {
                 self.shutdown();
                 std::process::exit(0);
             }
+            "restart" => {
+                log_line("restart requested from menu");
+                self.shutdown();
+                // `open` the .app bundle, not the inner executable: relaunching the
+                // binary directly gives up the bundle identity that TCC grants are
+                // tied to, so hotkeys would silently stop working.
+                if let Some(bundle) = app_bundle_path() {
+                    // Detached, so it survives our exit. The new instance takes over
+                    // the pid lock, which is why we must exit rather than linger.
+                    match std::process::Command::new("/usr/bin/open")
+                        .arg("-n")
+                        .arg(&bundle)
+                        .spawn()
+                    {
+                        Ok(_) => {
+                            log_line(format!("relaunching {}", bundle.display()));
+                            std::process::exit(0);
+                        }
+                        Err(err) => log_line(format!("restart failed: {err}; quit manually")),
+                    }
+                } else {
+                    log_line("restart unavailable: not running from an .app bundle");
+                }
+            }
+            "logs" => match open_log_path() {
+                Ok(path) => log_line(format!("opened log: {path}")),
+                Err(err) => log_line(format!("open log failed: {err}")),
+            },
             "copy_transcript" => match self.last_transcript.lock().ok().and_then(|v| v.clone()) {
                 Some(text) if !text.trim().is_empty() => match inject::copy_text(&text) {
                     Ok(()) => log_line("last transcript copied"),
@@ -351,32 +379,9 @@ impl Runtime {
                     Err(err) => log_line(format!("language save failed: {err}")),
                 }
             }
-            id if id.starts_with("speech_backend:") => {
-                let backend = id.trim_start_matches("speech_backend:");
-                let already_selected = self
-                    .speech
-                    .lock()
-                    .map(|speech| speech.backend == backend)
-                    .unwrap_or(false);
-                if already_selected {
-                    // muda flips a CheckMenuItem before dispatching the event, so
-                    // re-clicking the active backend has already unchecked it. Put
-                    // the tick back rather than leaving the group with none.
-                    ui::select_menu_item(ui::group::SPEECH_BACKEND, id);
-                    return;
-                }
-                match Config::set_user_value("speech", "backend", backend) {
-                    Ok(()) => {
-                        self.update_speech(|speech| speech.backend = backend.to_string());
-                        ui::select_menu_item(ui::group::SPEECH_BACKEND, id);
-                        log_line(format!("speech backend selected: {backend}"));
-                    }
-                    Err(err) => {
-                        log_line(format!("speech backend save failed: {err}"));
-                        self.resync_speech_menu();
-                    }
-                }
-            }
+            // No speech_backend arm: the Backend submenu is gone, since choosing a
+            // voice already implies its engine. Selecting a voice below sets both.
+
             id if id == "speech_voice:" || id.starts_with("speech_voice:") => {
                 let voice = id.trim_start_matches("speech_voice:");
                 let saved = Config::set_user_value("speech", "backend", "say")
@@ -387,7 +392,6 @@ impl Runtime {
                             speech.backend = "say".to_string();
                             speech.voice = (!voice.is_empty()).then_some(voice.to_string());
                         });
-                        ui::select_menu_item(ui::group::SPEECH_BACKEND, "speech_backend:say");
                         ui::select_menu_item(ui::group::SAY_VOICE, id);
                         log_line(format!(
                             "macOS speech voice selected: {}; backend=say",
@@ -432,7 +436,6 @@ impl Runtime {
                             speech.backend = "kokoro".to_string();
                             speech.kokoro.sid = parsed;
                         });
-                        ui::select_menu_item(ui::group::SPEECH_BACKEND, "speech_backend:kokoro");
                         ui::select_menu_item(ui::group::KOKORO_SID, id);
                         log_line(format!("kokoro speaker selected: {sid}; backend=kokoro"));
                     }
@@ -455,10 +458,6 @@ impl Runtime {
         let Ok(speech) = self.speech.lock() else {
             return;
         };
-        ui::select_menu_item(
-            ui::group::SPEECH_BACKEND,
-            &format!("speech_backend:{}", speech.backend),
-        );
         ui::select_menu_item(
             ui::group::SAY_VOICE,
             &format!("speech_voice:{}", speech.voice.as_deref().unwrap_or("")),
@@ -553,6 +552,36 @@ fn audio_worker(cfg: Config, client: Arc<ChatClient>, rx: Receiver<HotkeyCommand
             }
         }
     }
+}
+
+/// Path of the enclosing `.app` bundle, or None when running the bare binary
+/// (`cargo run`, tests). The executable lives at `Yappr.app/Contents/MacOS/Yappr`,
+/// so the bundle is three levels up.
+fn app_bundle_path() -> Option<std::path::PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let bundle = exe.parent()?.parent()?.parent()?;
+    (bundle.extension()? == "app").then(|| bundle.to_path_buf())
+}
+
+/// Reveal the log in Finder. The Logs row displayed a path but was built disabled
+/// with no handler, while the status line told the user to "see log".
+fn open_log_path() -> Result<String, Box<dyn std::error::Error>> {
+    let runtime = RUNTIME.get().ok_or("runtime unavailable")?;
+    let cfg = &runtime.menu_config.logging;
+    if !cfg.enabled {
+        return Err("logging is disabled in config.ini".into());
+    }
+    let path = crate::expand_tilde(&cfg.path);
+    if !path.exists() {
+        return Err(format!("no log yet at {}", path.display()).into());
+    }
+    // -R reveals it in Finder rather than opening it in a text editor, which is
+    // friendlier for a file that can be thousands of lines.
+    std::process::Command::new("/usr/bin/open")
+        .arg("-R")
+        .arg(&path)
+        .spawn()?;
+    Ok(path.display().to_string())
 }
 
 fn clear_busy() {

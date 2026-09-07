@@ -30,6 +30,12 @@ pub const BACKEND_DOWN: u8 = 11;
 /// didn't land"; partial downloads resume, so relaunching is worth saying.
 pub const SETUP_FAILED: u8 = 12;
 
+/// One phrasing per timing, used everywhere. There were four: "Restart to Apply"
+/// (twice), "Applies to Next Response", "Restart required · currently ...", and
+/// nothing at all for Microphone, the one setting that is actually live.
+const NEEDS_RESTART: &str = "Takes effect after restart";
+const APPLIES_NEXT_ANSWER: &str = "Takes effect on the next answer";
+
 /// Radio-style menu groups. Named constants rather than bare strings because the
 /// group has to match between the builder here and the click handler in `runtime`;
 /// a typo in either used to mean the checkmark silently stopped moving.
@@ -37,7 +43,6 @@ pub mod group {
     pub const MIC: &str = "mic";
     pub const MODEL: &str = "model";
     pub const LANGUAGE: &str = "lang";
-    pub const SPEECH_BACKEND: &str = "speech_backend";
     pub const SAY_VOICE: &str = "speech_voice";
     pub const KOKORO_SID: &str = "kokoro_sid";
 }
@@ -77,13 +82,18 @@ pub fn create_status_item(cfg: &Config) -> Result<StatusItem, Box<dyn std::error
     let language = language_menu(cfg)?;
     let speech = speech_menu(cfg)?;
     let copy = MenuItem::with_id("copy_transcript", "Copy Last Transcript", true, None);
-    let logs = MenuItem::with_id("logs", log_label(cfg), false, None);
+    // Clickable when there is a log to reveal. It used to be disabled, so the
+    // status line's "see log" pointed at a path the menu would not open.
+    let logs = MenuItem::with_id("logs", log_label(cfg), cfg.logging.enabled, None);
     let version = MenuItem::with_id(
         "version",
         format!("Yappr {}", crate::version()),
         false,
         None,
     );
+    // Three rows tell the user to restart; without this the only way out was Quit
+    // followed by finding and relaunching the app by hand.
+    let restart = MenuItem::with_id("restart", "Restart Yappr", true, None);
     let quit = MenuItem::with_id("quit", "Quit", true, None);
     let separator = PredefinedMenuItem::separator();
     menu.append_items(&[
@@ -101,6 +111,7 @@ pub fn create_status_item(cfg: &Config) -> Result<StatusItem, Box<dyn std::error
         &logs,
         &separator,
         &version,
+        &restart,
         &quit,
     ])?;
 
@@ -270,15 +281,27 @@ fn model_menu(cfg: &Config) -> Result<Submenu, Box<dyn std::error::Error>> {
     menu.append(&PredefinedMenuItem::separator())?;
     menu.append(&MenuItem::with_id(
         "model_restart_note",
-        "Restart to Apply",
+        NEEDS_RESTART,
         false,
         None,
     ))?;
     Ok(menu)
 }
 
+/// Output language for answers. `[language] target` is only consumed by the chat
+/// prompt, not the on-device ASR path, so in Dictation Only mode picking one did
+/// nothing while still looking live.
 fn language_menu(cfg: &Config) -> Result<Submenu, Box<dyn std::error::Error>> {
-    let menu = Submenu::with_id("language", "Output Language", true);
+    let usable = !cfg.mode.is_poor();
+    let menu = Submenu::with_id(
+        "language",
+        if usable {
+            "Output Language"
+        } else {
+            "Output Language (Dictate + Chat mode only)"
+        },
+        usable,
+    );
     for language in &cfg.language.options {
         menu.append(&selectable_item(
             group::LANGUAGE,
@@ -291,37 +314,44 @@ fn language_menu(cfg: &Config) -> Result<Submenu, Box<dyn std::error::Error>> {
     menu.append(&PredefinedMenuItem::separator())?;
     menu.append(&MenuItem::with_id(
         "language_restart_note",
-        "Restart to Apply",
+        NEEDS_RESTART,
         false,
         None,
     ))?;
     Ok(menu)
 }
 
+/// Voice picker for spoken answers.
+///
+/// There is deliberately no "Backend" submenu: picking any macOS voice already
+/// forces `backend = say` and any Kokoro speaker forces `backend = kokoro`, so a
+/// separate backend list duplicated a choice made one level down and could
+/// disagree with it. The two voice submenus *are* the backend choice.
+///
+/// Disabled in Dictation Only mode, where nothing is ever spoken.
 fn speech_menu(cfg: &Config) -> Result<Submenu, Box<dyn std::error::Error>> {
-    let menu = Submenu::with_id("speech", "Speech Output", true);
-    let backend = Submenu::with_id("speech_backend", "Backend", true);
-    for (id, label) in visible_speech_backends() {
-        backend.append(&selectable_item(
-            group::SPEECH_BACKEND,
-            format!("speech_backend:{id}"),
-            label,
-            cfg.speech.backend == id,
-            true,
-        ))?;
-    }
-    menu.append(&backend)?;
+    let usable = !cfg.mode.is_poor();
+    let menu = Submenu::with_id(
+        "speech",
+        if usable {
+            "Answer Voice"
+        } else {
+            "Answer Voice (Dictate + Chat mode only)"
+        },
+        usable,
+    );
 
-    let say_voice = Submenu::with_id("say_voice", "macOS Voice", true);
+    let say_voice = Submenu::with_id("say_voice", "macOS", true);
     say_voice.append(&selectable_item(
         group::SAY_VOICE,
         "speech_voice:",
         "System Default",
-        cfg.speech.voice.is_none(),
+        cfg.speech.backend == "say" && cfg.speech.voice.is_none(),
         true,
     ))?;
     for voice in say_voices(cfg.speech.voice.as_deref()) {
-        let selected = cfg.speech.voice.as_deref() == Some(voice.as_str());
+        let selected =
+            cfg.speech.backend == "say" && cfg.speech.voice.as_deref() == Some(voice.as_str());
         say_voice.append(&selectable_item(
             group::SAY_VOICE,
             format!("speech_voice:{voice}"),
@@ -332,30 +362,32 @@ fn speech_menu(cfg: &Config) -> Result<Submenu, Box<dyn std::error::Error>> {
     }
     menu.append(&say_voice)?;
 
-    let kokoro = Submenu::with_id("kokoro_voice", "Kokoro Speaker", true);
-    for voice in kokoro_voices() {
-        kokoro.append(&selectable_item(
-            group::KOKORO_SID,
-            format!("kokoro_sid:{}", voice.sid),
-            voice.label(),
-            cfg.speech.kokoro.sid == voice.sid,
-            true,
-        ))?;
+    // 53 flat speakers, four of whose names repeat across locales, became one
+    // submenu per locale.
+    let kokoro = Submenu::with_id("kokoro_voice", "Kokoro", true);
+    for locale in kokoro_locales() {
+        let group_menu = Submenu::with_id(format!("kokoro_locale:{locale}"), locale, true);
+        for voice in kokoro_voices().iter().filter(|v| v.locale() == locale) {
+            group_menu.append(&selectable_item(
+                group::KOKORO_SID,
+                format!("kokoro_sid:{}", voice.sid),
+                voice.label(),
+                cfg.speech.backend == "kokoro" && cfg.speech.kokoro.sid == voice.sid,
+                true,
+            ))?;
+        }
+        kokoro.append(&group_menu)?;
     }
     menu.append(&kokoro)?;
     menu.append(&PredefinedMenuItem::separator())?;
     menu.append(&MenuItem::with_id(
         "speech_apply_note",
-        "Applies to Next Response",
+        APPLIES_NEXT_ANSWER,
         false,
         None,
     ))?;
 
     Ok(menu)
-}
-
-fn visible_speech_backends() -> [(&'static str, &'static str); 2] {
-    [("say", "macOS Voice"), ("kokoro", "Kokoro")]
 }
 
 /// Move the tick within a radio-style group to `selected_id`. Uses the real
@@ -529,9 +561,42 @@ impl KokoroVoice {
         }
     }
 
-    fn label(&self) -> String {
-        format!("{} - {} ({})", self.name, self.description, self.sid)
+    /// Locale half of the description ("American Female" -> "American"), used to
+    /// group the 53 speakers into per-locale submenus.
+    fn locale(&self) -> &'static str {
+        self.description
+            .split_once(' ')
+            .map(|(locale, _)| locale)
+            .unwrap_or(self.description)
     }
+
+    /// Gender half ("American Female" -> "Female"). Inside a locale submenu the
+    /// locale is already the submenu title, so only this part is worth repeating.
+    fn gender(&self) -> &'static str {
+        self.description
+            .split_once(' ')
+            .map(|(_, gender)| gender)
+            .unwrap_or("")
+    }
+
+    /// Label within a locale submenu. The raw sid used to be in every label only
+    /// because four names repeat across locales (Dora, Alex, Santa, Alpha);
+    /// grouping by locale disambiguates them, so the number can go.
+    fn label(&self) -> String {
+        format!("{} - {}", self.name, self.gender())
+    }
+}
+
+/// Distinct locales in `KOKORO_VOICES`, in first-appearance order so American
+/// stays at the top rather than being alphabetised behind British.
+fn kokoro_locales() -> Vec<&'static str> {
+    let mut locales: Vec<&'static str> = Vec::new();
+    for voice in kokoro_voices() {
+        if !locales.contains(&voice.locale()) {
+            locales.push(voice.locale());
+        }
+    }
+    locales
 }
 
 fn say_voice_name(line: &str) -> Option<String> {
@@ -610,8 +675,9 @@ struct TimerContext {
 #[cfg(test)]
 mod tests {
     use super::{
-        group, is_preferred_say_voice, kokoro_voices, log_label, mode_switch_text, say_voice_label,
-        say_voice_name, visible_speech_backends,
+        group, is_preferred_say_voice, kokoro_locales, kokoro_voices, log_label, mode_switch_text,
+        say_voice_label, APPLIES_NEXT_ANSWER, NEEDS_RESTART,
+        say_voice_name,
     };
 
     /// Menu item ids are `"<prefix>:<value>"` and the group name is the prefix, so
@@ -624,7 +690,6 @@ mod tests {
             group::MIC,
             group::MODEL,
             group::LANGUAGE,
-            group::SPEECH_BACKEND,
             group::SAY_VOICE,
             group::KOKORO_SID,
         ] {
@@ -638,7 +703,6 @@ mod tests {
         assert_eq!(group::MIC, "mic");
         assert_eq!(group::MODEL, "model");
         assert_eq!(group::LANGUAGE, "lang");
-        assert_eq!(group::SPEECH_BACKEND, "speech_backend");
         assert_eq!(group::SAY_VOICE, "speech_voice");
         assert_eq!(group::KOKORO_SID, "kokoro_sid");
     }
@@ -700,16 +764,62 @@ mod tests {
         let voices = kokoro_voices();
 
         assert_eq!(voices.len(), 53);
-        assert_eq!(voices[0].label(), "Alloy - American Female (0)");
-        assert_eq!(voices[52].label(), "Yunyang - Chinese Male (52)");
+        // The locale moved into the submenu title and the sid is gone, so the
+        // label carries only what the surrounding menu doesn't already say.
+        assert_eq!(voices[0].label(), "Alloy - Female");
+        assert_eq!(voices[0].locale(), "American");
+        assert_eq!(voices[52].label(), "Yunyang - Male");
+        assert_eq!(voices[52].locale(), "Chinese");
     }
 
     #[test]
-    fn only_exposes_supported_primary_speech_backends() {
-        assert_eq!(
-            visible_speech_backends(),
-            [("say", "macOS Voice"), ("kokoro", "Kokoro")]
+    fn kokoro_speakers_group_into_locale_submenus() {
+        let locales = kokoro_locales();
+        // First-appearance order, so American stays on top rather than being
+        // alphabetised behind British.
+        assert_eq!(locales.first(), Some(&"American"));
+        assert!(locales.contains(&"Japanese"));
+        // Every speaker lands in exactly one locale, and 53 flat rows become a
+        // handful of submenus.
+        assert_eq!(kokoro_voices().len(), 53);
+        assert!(
+            locales.len() < 10,
+            "expected a handful of locales, got {}",
+            locales.len()
         );
+        let grouped: usize = locales
+            .iter()
+            .map(|l| kokoro_voices().iter().filter(|v| &v.locale() == l).count())
+            .sum();
+        assert_eq!(grouped, kokoro_voices().len(), "no speaker may be orphaned");
+    }
+
+    #[test]
+    fn kokoro_labels_drop_the_raw_sid_once_grouped() {
+        // The sid was in every label only because four names repeat across
+        // locales; the locale submenu now disambiguates them.
+        let voice = kokoro_voices()
+            .iter()
+            .find(|v| v.name == "Alloy")
+            .expect("Alloy exists");
+        assert_eq!(voice.label(), "Alloy - Female");
+        assert_eq!(voice.locale(), "American");
+        // Duplicate names must be distinguishable by their submenu.
+        let doras: Vec<_> = kokoro_voices()
+            .iter()
+            .filter(|v| v.name == "Dora")
+            .map(|v| v.locale())
+            .collect();
+        assert!(doras.len() > 1, "Dora repeats across locales");
+        assert_ne!(doras[0], doras[1], "repeated names differ by locale");
+    }
+
+    #[test]
+    fn one_phrasing_per_apply_timing() {
+        // Four different vocabularies existed for "when does this take effect".
+        assert!(NEEDS_RESTART.contains("restart"));
+        assert!(APPLIES_NEXT_ANSWER.contains("next answer"));
+        assert_ne!(NEEDS_RESTART, APPLIES_NEXT_ANSWER);
     }
 
     #[test]

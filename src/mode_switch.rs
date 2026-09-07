@@ -208,10 +208,20 @@ pub fn install(ns_menu: *mut std::ffi::c_void, is_rich: bool) {
 
     let item = NSMenuItem::new(mtm);
     item.setView(Some(&view));
-    // Insert just under the status line + two hotkey hints (after the first
-    // separator muda places). Clamps to menu length if shorter.
+    // Sit directly under the first separator, which muda places after the status
+    // line and the two hotkey hints. Searching for the separator instead of
+    // hardcoding index 4 means adding or reordering those rows can't silently
+    // misplace the switch.
     let count = menu.numberOfItems();
-    let index = 4.min(count);
+    let mut index = 4.min(count);
+    for i in 0..count {
+        if let Some(row) = menu.itemAtIndex(i) {
+            if row.isSeparatorItem() {
+                index = (i + 1).min(count);
+                break;
+            }
+        }
+    }
     menu.insertItem_atIndex(&item, index);
 
     TARGET.with(|t| *t.borrow_mut() = Some(target));
